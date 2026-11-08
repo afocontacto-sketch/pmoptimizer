@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import {
   Alert,
@@ -19,7 +19,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { Add, Paid, ReceiptLong } from "@mui/icons-material";
+import { Add, Paid, Print, ReceiptLong } from "@mui/icons-material";
 import {
   defaultAccounts,
   emptyFinanceState,
@@ -39,8 +39,8 @@ import type {
   JournalEntry,
   JournalLine,
 } from "./financeData";
-import { purchaseOrdersStorageKey } from "./supplyData";
-import type { PurchaseOrder } from "./supplyData";
+import { purchaseOrdersStorageKey, suppliersStorageKey } from "./supplyData";
+import type { PurchaseOrder, SupplierMaster } from "./supplyData";
 import { payrollRunsStorageKey } from "./HumanResourcesPage";
 
 type OperationalOrder = {
@@ -54,6 +54,7 @@ type OperationalOrder = {
   consumedMaterials: { code: string; quantity: number; unitCost?: number }[];
 };
 type StockBin = { code: string; quantity: number; unitCost: number };
+type ClientMaster = { name: string; contractCode?: string; wbs?: string[] };
 type InvoiceDraft = {
   kind: InvoiceKind;
   documentType: "Factura afecta" | "Factura exenta";
@@ -80,6 +81,12 @@ const outputVatAccountCode = "210201";
 const workOrdersStorageKey = "pmoptimizer-work-orders";
 const warehouseStorageKey = "pmoptimizer-warehouse-bins";
 const vatRate = 0.19;
+const fallbackClients: ClientMaster[] = [
+  { name: "Comercial Aconcagua" },
+  { name: "Minera Sur Ltda." },
+  { name: "Maderas del Valle" },
+  { name: "Fiat Chile", contractCode: "CT1234", wbs: ["CT1234-CL-B2N4-PRE", "CT1234-CL-B2N4-OVH", "CT1234-CL-B2N4-COR", "CT1234-CL-B2N4-REP"] },
+];
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
@@ -216,15 +223,37 @@ export default function AccountingPage({ role }: { role: string }) {
   const [draft, setDraft] = useState<InvoiceDraft>(() => newInvoiceDraft("Compra"));
   const [accountDraft, setAccountDraft] = useState<AccountDraft>({ code: "", name: "", type: "Gasto" });
   const [paymentTarget, setPaymentTarget] = useState<string | null>(null);
+  const [printInvoice, setPrintInvoice] = useState<FinanceInvoice | null>(null);
   const [paymentDate, setPaymentDate] = useState(today());
   const [paymentReference, setPaymentReference] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const canEdit = role === "Administrador" || role === "Contabilidad";
 
+  useEffect(() => {
+    if (!printInvoice) return;
+    const timer = window.setTimeout(() => {
+      window.print();
+      setPrintInvoice(null);
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [printInvoice]);
+
   const activeExpenseAccounts = finance.accounts.filter((account) => account.type === "Gasto");
   const activeRevenueAccounts = finance.accounts.filter((account) => account.type === "Ingreso");
   const purchaseOrders = readFinanceList<PurchaseOrder>(purchaseOrdersStorageKey);
+  const savedClients = readFinanceList<ClientMaster>("pmoptimizer-clients", fallbackClients);
+  const clients = savedClients.length ? savedClients : fallbackClients;
+  const clientNames = [...new Set(clients.map((client) => client.name).filter(Boolean))];
+  const savedSupplierNames = readFinanceList<SupplierMaster>(suppliersStorageKey).map((supplier) => supplier.name);
+  const quotedSupplierNames = readFinanceList<{ quotes?: { supplier: string }[] }>("pmoptimizer-purchase-requests")
+    .flatMap((request) => request.quotes?.map((quote) => quote.supplier) ?? []);
+  const supplierNames = [...new Set([...savedSupplierNames, ...purchaseOrders.map((order) => order.supplier), ...quotedSupplierNames].filter(Boolean))];
+  const contractOptions = [...new Map<string, ClientMaster>(clients
+    .filter((client): client is ClientMaster & { contractCode: string } => Boolean(client.contractCode))
+    .map((client): [string, ClientMaster] => [client.contractCode, client])).values()];
+  const selectedClient = contractOptions.find((client) => client.contractCode === draft.contract);
+  const wbsOptions = selectedClient?.wbs ?? [];
   const payrollRuns = readFinanceList<{
     id: string;
     period: string;
@@ -523,12 +552,15 @@ export default function AccountingPage({ role }: { role: string }) {
             <Paper component="form" onSubmit={handleInvoiceSubmit} sx={{ p: 3 }}>
               <Stack spacing={2}>
                 <Typography variant="h6">
-                  {tab === 1 ? "Registrar factura de proveedor" : "Crear documento de cliente (demo)"}
+                  {tab === 1 ? "Registrar factura de proveedor" : "Emitir factura de prueba"}
                 </Typography>
                 {tab === 2 && (
                   <Alert severity="info">
-                    La acción registra el documento y el asiento en PMOPTIMIZER, pero no timbra ni envía un DTE al SII.
+                    Simulación para pruebas: crea un registro, genera su asiento y permite imprimirlo. No es un DTE, no tiene validez tributaria y no se envía al SII.
                   </Alert>
+                )}
+                {tab === 1 && supplierNames.length === 0 && (
+                  <Alert severity="warning">No hay proveedores en el maestro. Regístralos desde Compras antes de ingresar facturas.</Alert>
                 )}
                 <Grid container spacing={2}>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
@@ -541,7 +573,9 @@ export default function AccountingPage({ role }: { role: string }) {
                     <TextField label="Folio / número" value={draft.number} onChange={(event) => setDraft((current) => ({ ...current, number: event.target.value }))} required fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                    <TextField label={tab === 1 ? "Proveedor" : "Cliente"} value={draft.counterparty} onChange={(event) => setDraft((current) => ({ ...current, counterparty: event.target.value }))} required fullWidth />
+                    <TextField select label={tab === 1 ? "Proveedor maestro" : "Cliente maestro"} value={draft.counterparty} onChange={(event) => setDraft((current) => ({ ...current, counterparty: event.target.value }))} required fullWidth>
+                      {(tab === 1 ? supplierNames : clientNames).map((name) => <MenuItem key={name} value={name}>{name}</MenuItem>)}
+                    </TextField>
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                     <TextField select label="Moneda" value={draft.currency} onChange={(event) => updateCurrency(event.target.value as FinanceCurrency)} fullWidth>
@@ -574,10 +608,16 @@ export default function AccountingPage({ role }: { role: string }) {
                     </Grid>
                   )}
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField label="Contrato (opcional)" value={draft.contract} onChange={(event) => setDraft((current) => ({ ...current, contract: event.target.value }))} fullWidth />
+                    <TextField select label="Contrato (opcional)" value={draft.contract} onChange={(event) => setDraft((current) => ({ ...current, contract: event.target.value, wbs: "" }))} fullWidth>
+                      <MenuItem value="">Sin contrato</MenuItem>
+                      {contractOptions.map((contract) => <MenuItem key={contract.contractCode} value={contract.contractCode}>{contract.contractCode} · {contract.name}</MenuItem>)}
+                    </TextField>
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField label="Elemento WBS (opcional)" value={draft.wbs} onChange={(event) => setDraft((current) => ({ ...current, wbs: event.target.value }))} fullWidth />
+                    <TextField select label="Elemento WBS (opcional)" value={draft.wbs} disabled={!draft.contract} onChange={(event) => setDraft((current) => ({ ...current, wbs: event.target.value }))} fullWidth>
+                      <MenuItem value="">Sin WBS</MenuItem>
+                      {wbsOptions.map((code) => <MenuItem key={code} value={code}>{code}</MenuItem>)}
+                    </TextField>
                   </Grid>
                 </Grid>
                 <Typography variant="body2" color="text.secondary">
@@ -590,8 +630,8 @@ export default function AccountingPage({ role }: { role: string }) {
                   )}
                 </Typography>
                 <Box>
-                  <Button type="submit" variant="contained" disabled={!canEdit} startIcon={tab === 1 ? <ReceiptLong /> : <Add />}>
-                    {tab === 1 ? "Registrar y contabilizar" : "Emitir demo y contabilizar"}
+                  <Button type="submit" variant="contained" disabled={!canEdit || (tab === 1 && supplierNames.length === 0)} startIcon={tab === 1 ? <ReceiptLong /> : <Add />}>
+                    {tab === 1 ? "Registrar y contabilizar" : "Emitir factura de prueba"}
                   </Button>
                 </Box>
               </Stack>
@@ -616,10 +656,11 @@ export default function AccountingPage({ role }: { role: string }) {
           )}
 
           <Paper sx={{ p: 3 }}>
-            <Typography variant="h6" sx={{ mb: 2 }}>{tab === 1 ? "Facturas de proveedor" : "Facturas de cliente · DTE demo"}</Typography>
+            <Typography variant="h6" sx={{ mb: 2 }}>{tab === 1 ? "Facturas de proveedor" : "Facturas de cliente · pruebas"}</Typography>
             <InvoiceTable
               invoices={finance.invoices.filter((invoice) => invoice.kind === (tab === 1 ? "Compra" : "Venta"))}
               onPay={beginPayment}
+              onPrint={setPrintInvoice}
               canEdit={canEdit}
             />
             {tab === 1 && (
@@ -634,6 +675,7 @@ export default function AccountingPage({ role }: { role: string }) {
               </Box>
             )}
           </Paper>
+          {printInvoice && <InvoicePrint invoice={printInvoice} />}
         </Stack>
       )}
 
@@ -714,10 +756,12 @@ export default function AccountingPage({ role }: { role: string }) {
 function InvoiceTable({
   invoices,
   onPay,
+  onPrint,
   canEdit,
 }: {
   invoices: FinanceInvoice[];
   onPay: (id: string) => void;
+  onPrint: (invoice: FinanceInvoice) => void;
   canEdit: boolean;
 }) {
   if (invoices.length === 0) {
@@ -728,7 +772,7 @@ function InvoiceTable({
       <TableHead><TableRow>
         <TableCell>Documento</TableCell><TableCell>Contraparte</TableCell><TableCell>Emisión / vencimiento</TableCell>
         <TableCell>Moneda</TableCell><TableCell>OC / WBS</TableCell><TableCell align="right">Total CLP</TableCell>
-        <TableCell>Estado</TableCell><TableCell>Acción</TableCell>
+        <TableCell>Estado</TableCell><TableCell>Acciones</TableCell>
       </TableRow></TableHead>
       <TableBody>{invoices.map((invoice) => (
         <TableRow key={invoice.id}>
@@ -740,11 +784,62 @@ function InvoiceTable({
           <TableCell align="right">{money(invoice.totalClp)}</TableCell>
           <TableCell><Chip size="small" label={invoice.status} color={invoice.status === "Pagada" ? "success" : invoice.status === "Borrador" ? "default" : "warning"} /></TableCell>
           <TableCell>
+            <Button size="small" startIcon={<Print />} onClick={() => onPrint(invoice)}>Imprimir</Button>
             {canEdit && (invoice.status === "Contabilizada" || invoice.status === "Emitida (demo)") &&
               <Button size="small" onClick={() => onPay(invoice.id)}>{invoice.kind === "Compra" ? "Pagar" : "Cobrar"}</Button>}
           </TableCell>
         </TableRow>
       ))}</TableBody>
     </Table>
+  );
+}
+
+function InvoicePrint({ invoice }: { invoice: FinanceInvoice }) {
+  const isTestInvoice = invoice.kind === "Venta";
+  return (
+    <Box className="document-print-area">
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "2px solid #166534", paddingBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <img
+            src="/PMO.jfif"
+            alt=""
+            onError={(event) => { event.currentTarget.style.display = "none"; }}
+            style={{ maxWidth: 64, maxHeight: 54, objectFit: "contain" }}
+          />
+          <strong style={{ fontSize: 20, letterSpacing: 1 }}>PMOPTIMIZER</strong>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ color: "#166534", fontSize: 12, fontWeight: 700, letterSpacing: 1 }}>
+            {isTestInvoice ? "FACTURA DE PRUEBA · SIN VALIDEZ TRIBUTARIA" : "REGISTRO DE FACTURA"}
+          </div>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{invoice.documentType} {invoice.number}</div>
+        </div>
+      </header>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, margin: "28px 0" }}>
+        <div><small style={{ color: "#64748b" }}>{invoice.kind === "Venta" ? "CLIENTE" : "PROVEEDOR"}</small><div style={{ fontSize: 16, fontWeight: 600 }}>{invoice.counterparty}</div></div>
+        <div><small style={{ color: "#64748b" }}>FECHA DE EMISIÓN</small><div>{invoice.issueDate}</div></div>
+        <div><small style={{ color: "#64748b" }}>FECHA DE VENCIMIENTO</small><div>{invoice.dueDate}</div></div>
+        <div><small style={{ color: "#64748b" }}>REFERENCIA</small><div>{invoice.contract ?? invoice.purchaseOrder ?? "—"}{invoice.wbs ? ` · WBS ${invoice.wbs}` : ""}</div></div>
+      </div>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead><tr style={{ background: "#f1f5f9", textAlign: "left" }}>
+          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1" }}>Descripción</th>
+          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1", textAlign: "right" }}>Monto ({invoice.currency})</th>
+        </tr></thead>
+        <tbody>
+          <tr><td style={{ padding: 10, borderBottom: "1px solid #e2e8f0" }}>{invoice.documentType} · Referencia {invoice.number}</td><td style={{ padding: 10, borderBottom: "1px solid #e2e8f0", textAlign: "right" }}>{money(invoice.netAmount, invoice.currency)}</td></tr>
+          <tr><td style={{ padding: 10, borderBottom: "1px solid #e2e8f0" }}>IVA</td><td style={{ padding: 10, borderBottom: "1px solid #e2e8f0", textAlign: "right" }}>{money(invoice.vatAmount, invoice.currency)}</td></tr>
+        </tbody>
+      </table>
+      <div style={{ marginTop: 18, textAlign: "right" }}>
+        <div>Total documento: <strong>{money(invoice.totalAmount, invoice.currency)}</strong></div>
+        <div style={{ marginTop: 6, fontSize: 18 }}>Total equivalente CLP: <strong>{money(invoice.totalClp)}</strong></div>
+      </div>
+      {isTestInvoice && (
+        <div style={{ marginTop: 48, border: "1px solid #94a3b8", padding: 12, color: "#475569", fontSize: 11, textAlign: "center" }}>
+          DOCUMENTO FICTICIO PARA PRUEBAS. NO ES UN DOCUMENTO TRIBUTARIO ELECTRÓNICO Y NO HA SIDO ENVIADO NI VALIDADO POR EL SII.
+        </div>
+      )}
+    </Box>
   );
 }

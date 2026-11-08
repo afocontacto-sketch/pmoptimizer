@@ -34,6 +34,7 @@ import type {
   RouteTemplate,
   TriggerType,
 } from "./maintenanceData";
+import { readEquipmentMaster } from "./masterData";
 
 type CustomFieldDefinition = {
   key: string;
@@ -201,6 +202,16 @@ const routeHeaders = [
 export default function MaintenancePlanning({ role = "Administrador" }: { role?: string }) {
   const [routes, setRoutes] = useState<RouteTemplate[]>(() => readStored(routeStorageKey, sampleRoutes));
   const [plans, setPlans] = useState<MaintenancePlan[]>(() => readStored(planStorageKey, samplePlans));
+  const equipmentOptions = useMemo(() => {
+    const master = readEquipmentMaster();
+    const byCode = new Map(master.map((equipment): [string, { code: string; name: string }] => [equipment.code, equipment]));
+    for (const plan of plans) {
+      if (plan.equipmentId && !byCode.has(plan.equipmentId)) {
+        byCode.set(plan.equipmentId, { code: plan.equipmentId, name: "Equipo de plan existente" });
+      }
+    }
+    return [...byCode.values()];
+  }, [plans]);
   const [clientContracts] = useState(() => readStored<ClientContract[]>("pmoptimizer-clients", []));
   const [workOrders] = useState(() => readStored<{ plannedCallId?: string; status: string }[]>("pmoptimizer-work-orders", []));
   const [customFieldDefinitions, setCustomFieldDefinitions] = useState<CustomFieldDefinition[]>(
@@ -424,6 +435,11 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+    if (role !== "Administrador") {
+      setImportError("Solo el Administrador puede realizar cargas masivas.");
+      setImportMessage("");
+      return;
+    }
     try {
       const lines = (await file.text()).replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim());
       if (lines.length < 2) throw new Error("El archivo no contiene filas para importar.");
@@ -496,6 +512,11 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
+    if (role !== "Administrador") {
+      setImportError("Solo el Administrador puede realizar cargas masivas.");
+      setImportMessage("");
+      return;
+    }
     try {
       const lines = (await file.text()).replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim());
       if (lines.length < 2) throw new Error("El archivo no contiene filas para importar.");
@@ -792,7 +813,24 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
                 <TextField label="Nombre del plan" value={newPlan.name} onChange={(event) => updatePlanForm("name", event.target.value)} required fullWidth />
               </Grid>
               <Grid size={{ xs: 12, md: 4 }}>
-                <TextField label="Equipo / activo" value={newPlan.equipmentId} onChange={(event) => updatePlanForm("equipmentId", event.target.value)} required fullWidth />
+                <TextField select label="Equipo / activo (maestro)" value={newPlan.equipmentId} onChange={(event) => {
+                  const selectedEquipment = readEquipmentMaster().find((item) => item.code === event.target.value);
+                  setNewPlan((current) => ({
+                    ...current,
+                    equipmentId: event.target.value,
+                    contract: selectedEquipment?.contractCode && clientContracts.some((contract) => contract.contractCode === selectedEquipment.contractCode)
+                      ? selectedEquipment.contractCode
+                      : current.contract,
+                    wbs: "",
+                  }));
+                }} required fullWidth>
+                  {equipmentOptions.map((equipment) => {
+                    const masterEquipment = readEquipmentMaster().find((item) => item.code === equipment.code);
+                    return <MenuItem key={equipment.code} value={equipment.code}>
+                      {equipment.code}{masterEquipment?.serialNumber ? ` · Serie ${masterEquipment.serialNumber}` : ""} · {equipment.name}{masterEquipment?.contractCode ? ` · ${masterEquipment.contractCode}` : ""}
+                    </MenuItem>;
+                  })}
+                </TextField>
               </Grid>
               <Grid size={{ xs: 12, md: 4 }}>
                 <TextField select label="Hoja de ruta" value={newPlan.routeId} onChange={(event) => updatePlanForm("routeId", event.target.value)} required fullWidth>
@@ -928,18 +966,20 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
             <Button startIcon={<Download />} onClick={() => downloadCsv("plantilla_hojas_de_ruta.csv", routeHeaders, [[
               "HR-001", "Preventivo vehículo", 10, "Inspección de rodamiento", 2, 18000, "MAT-422", "Rodamiento SKF 6205", 1, "unidad", 7800,
             ]])}>Plantilla rutas</Button>
-            <Button component="label" startIcon={<UploadFile />}>
-              Importar planes
-              <input hidden type="file" accept=".csv,text/csv" onChange={handlePlanImport} />
-            </Button>
-            <Button component="label" startIcon={<UploadFile />}>
-              Importar rutas
-              <input hidden type="file" accept=".csv,text/csv" onChange={handleRouteImport} />
-            </Button>
+            {role === "Administrador" && <>
+              <Button component="label" startIcon={<UploadFile />}>
+                Importar planes
+                <input hidden type="file" accept=".csv,text/csv" onChange={handlePlanImport} />
+              </Button>
+              <Button component="label" startIcon={<UploadFile />}>
+                Importar rutas
+                <input hidden type="file" accept=".csv,text/csv" onChange={handleRouteImport} />
+              </Button>
+            </>}
           </Stack>
         </Stack>
         <Alert severity="warning" sx={{ mt: 1 }}>
-          Los CSV de ejemplo solo cargan planes u hojas de ruta. Cada módulo tendrá su propia plantilla validada al implementarse.
+          Las cargas masivas CSV están habilitadas solo para el Administrador. Los archivos cargan planes u hojas de ruta según su plantilla.
         </Alert>
       </Paper>
 

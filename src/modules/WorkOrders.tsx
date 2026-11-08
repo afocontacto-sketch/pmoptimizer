@@ -41,6 +41,7 @@ import {
 } from "./supplyData";
 import type { PurchaseOrder } from "./supplyData";
 import { getEmployeeHourlyRate, readHrEmployees } from "./HumanResourcesPage";
+import { readEquipmentMaster } from "./masterData";
 
 type OrderType = "PRE" | "OVH" | "COR" | "REP" | "ESPERA";
 type OrderStatus = "Asignada" | "En ejecución" | "Cierre provisorio" | "Cerrada";
@@ -131,6 +132,10 @@ type StockBin = {
   unit: string;
   unitCost: number;
   reference?: string;
+};
+
+type StockBinGroup = StockBin & {
+  sourceBins: StockBin[];
 };
 
 type PlannedCallRecord = {
@@ -438,6 +443,27 @@ function isPickableLocation(location: string): boolean {
   return !["REC-UBICAR", "REC-CALIDAD", "TRANSITO"].includes(location.toUpperCase());
 }
 
+function aggregateStockBins(bins: StockBin[]): StockBinGroup[] {
+  const grouped = new Map<string, StockBinGroup>();
+  for (const bin of bins) {
+    const key = [bin.code, bin.warehouse, bin.location, bin.status, bin.unit].join("|");
+    const current = grouped.get(key);
+    if (!current) {
+      grouped.set(key, { ...bin, sourceBins: [bin] });
+      continue;
+    }
+    const priorQuantity = current.quantity;
+    const totalQuantity = priorQuantity + bin.quantity;
+    current.unitCost = totalQuantity > 0
+      ? (current.unitCost * priorQuantity + bin.unitCost * bin.quantity) / totalQuantity
+      : current.unitCost;
+    current.quantity = totalQuantity;
+    current.reserved += bin.reserved;
+    current.sourceBins.push(bin);
+  }
+  return [...grouped.values()];
+}
+
 function downloadTemplate(filename: string, headers: string[], sample: (string | number)[]): void {
   downloadCsvRows(filename, headers, [sample]);
 }
@@ -477,7 +503,7 @@ export default function WorkOrders({
   user: string;
   role: RoleName;
   defaultTab?: number;
-  scope?: "operations" | "warehouse" | "quality";
+  scope?: "operations" | "warehouse" | "quality" | "team";
 }) {
   const [orders, setOrders] = useState<WorkOrder[]>(() =>
     readList<WorkOrder>(ordersStorageKey, initialOrders).map((order) =>
@@ -524,8 +550,48 @@ export default function WorkOrders({
   const [transfer, setTransfer] = useState({ binId: "", quantity: "1", warehouse: "Bodega Taller", location: "A-01-01", toQuality: false });
   const [warehouseImportMessage, setWarehouseImportMessage] = useState("");
   const [warehouseImportError, setWarehouseImportError] = useState("");
+  const [assignmentDrafts, setAssignmentDrafts] = useState<Record<string, string>>({});
   const contracts = useMemo(readContracts, []);
+  const employees = useMemo(readHrEmployees, []);
+  const equipmentOptions = useMemo(() => {
+    const masterEquipment = readEquipmentMaster();
+    const allValues = [
+      ...masterEquipment.map((item) => item.code),
+      ...plans.map((plan) => plan.equipmentId),
+      ...orders.map((order) => order.equipment),
+    ];
+    return [...new Set(allValues.filter(Boolean))].map((value) => ({
+      value,
+      label: (() => {
+        const equipment = masterEquipment.find((item) => item.code === value);
+        return equipment
+          ? `${value}${equipment.serialNumber ? ` · Serie ${equipment.serialNumber}` : ""} · ${equipment.name}${equipment.contractCode ? ` · ${equipment.contractCode}` : ""}`
+          : value;
+      })(),
+    }));
+  }, [orders, plans]);
   const technicianProfiles = useMemo(readTechnicianProfiles, []);
+  const supervisorEmployee = role === "Supervisor"
+    ? employees.find((employee) => employee.supervisorLogin === user)
+    : undefined;
+  const supervisorTeam = supervisorEmployee
+    ? employees.filter((employee) => employee.supervisorId === supervisorEmployee.id)
+    : [];
+  const supervisorContractCodes = supervisorEmployee?.contractCodes?.length
+    ? supervisorEmployee.contractCodes
+    : supervisorEmployee?.contractCode ? [supervisorEmployee.contractCode] : [];
+  const teamContractCodes = new Set([
+    ...supervisorContractCodes,
+    ...supervisorTeam.flatMap((employee) => employee.contractCodes?.length
+      ? employee.contractCodes
+      : employee.contractCode ? [employee.contractCode] : []),
+  ]);
+  const assignableTeam = supervisorTeam.filter((employee) =>
+    employee.direct && technicianProfiles.some((technician) => technician.name === employee.name));
+  const supervisorTeamNames = new Set(supervisorTeam.map((employee) => employee.name));
+  const supervisorCanSeeOrder = (order: WorkOrder) => role !== "Supervisor" ||
+    supervisorTeamNames.has(order.technician) ||
+    teamContractCodes.has(order.contract);
   const [newOrder, setNewOrder] = useState({
     type: "PRE" as OrderType,
     contract: contracts[0].code,
@@ -536,22 +602,22 @@ export default function WorkOrders({
     technician: technicianProfiles[0].name,
   });
 
-  const isSupervisor = role === "Administrador" || role === "Supervisor";
-  const canOperate = ["Administrador", "Supervisor", "Producción", "Industrial", "Ingeniería"].includes(role);
+  const isSupervisor = role === "Supervisor";
+  const canCloseOrders = role === "Administrador";
+  const canOperate = ["Administrador", "Producción", "Industrial", "Ingeniería"].includes(role);
   const canInspect = role === "Administrador" || role === "Calidad";
   const canReceive = role === "Administrador" || role === "Compras";
-  const canPutaway = ["Administrador", "Supervisor", "Compras", "Producción", "Industrial"].includes(role);
-  const canCount = ["Administrador", "Supervisor", "Compras", "Producción", "Industrial"].includes(role);
+  const canPutaway = ["Administrador", "Compras", "Producción", "Industrial"].includes(role);
+  const canCount = ["Administrador", "Compras", "Producción", "Industrial"].includes(role);
+  const canChangePicking = ["Administrador", "Producción", "Industrial"].includes(role);
   const currentContract = contracts.find((contract) => contract.code === newOrder.contract) ?? contracts[0];
   const selectedRoute = routes.find((route) => route.id === newOrder.routeId);
   const selectedPlan = plans.find((plan) => plan.id === newOrder.planId);
-  const availableOrders = useMemo(
-    () => orders.filter((order) => order.type !== "ESPERA" && order.status !== "Cerrada"),
-    [orders],
-  );
+  const availableOrders = orders.filter((order) =>
+    order.type !== "ESPERA" && order.status !== "Cerrada" && supervisorCanSeeOrder(order));
   const qualityOrders = orders.filter((order) => order.type !== "ESPERA" && order.status !== "Cerrada");
   const selectedQualityOrder = qualityOrders.find((order) => order.id === selectedQualityOrderId) ?? qualityOrders[0];
-  const activeOrder = orders.find((order) => order.timerStartedAt !== null);
+  const activeOrder = orders.find((order) => order.timerStartedAt !== null && supervisorCanSeeOrder(order));
   const visibleOrders = orders.map((order) => ({
     ...order,
     currentSeconds: order.elapsedSeconds + (
@@ -591,11 +657,20 @@ export default function WorkOrders({
   const transferableBins = stock.filter((bin) =>
     bin.status === "Libre utilización" && isPickableLocation(bin.location) && bin.quantity > bin.reserved,
   );
-  const visibleStock = stock.filter((bin) => {
-    const query = stockFilter.trim().toLowerCase();
-    return !query || `${bin.code} ${bin.name} ${bin.warehouse} ${bin.location} ${bin.status} ${bin.reference ?? ""}`
-      .toLowerCase().includes(query);
-  });
+  const stockSearch = stockFilter.trim().toLowerCase();
+  const visibleStock = aggregateStockBins(stock).filter((bin) =>
+    !stockSearch ||
+    `${bin.code} ${bin.name} ${bin.warehouse} ${bin.location} ${bin.status}`.toLowerCase().includes(stockSearch) ||
+    bin.sourceBins.some((sourceBin) => (sourceBin.reference ?? "").toLowerCase().includes(stockSearch)),
+  );
+  const supervisorAvailableStock = aggregateStockBins(stock.filter((bin) => {
+    const availableQuantity = bin.quantity - bin.reserved;
+    return bin.status === "Libre utilización" &&
+      isPickableLocation(bin.location) &&
+      availableQuantity > 0;
+  })).filter((bin) =>
+    !stockSearch || `${bin.code} ${bin.name} ${bin.warehouse} ${bin.location}`.toLowerCase().includes(stockSearch),
+  );
   const availableMaterials = new Set(stock
     .filter((bin) => bin.status === "Libre utilización" && isPickableLocation(bin.location) && bin.quantity > bin.reserved)
     .map((bin) => bin.code)).size;
@@ -608,13 +683,46 @@ export default function WorkOrders({
     { index: 2, label: "Almacén y picking" },
     { index: 3, label: "Kardex y conteos" },
     { index: 4, label: "Calidad" },
-    ...(isSupervisor ? [{ index: 5, label: "OT cerradas" }] : []),
+    ...(canCloseOrders ? [{ index: 5, label: "OT cerradas" }] : []),
+    ...(role === "Supervisor" ? [{ index: 6, label: "Personal" }] : []),
   ];
   const visibleTabs = scope === "warehouse"
-    ? tabDefinitions.filter((item) => item.index === 2 || item.index === 3)
+    ? tabDefinitions.filter((item) => item.index === 2 || (role !== "Supervisor" && item.index === 3))
     : scope === "quality"
       ? tabDefinitions.filter((item) => item.index === 4)
-      : tabDefinitions.filter((item) => item.index === 0 || item.index === 1 || item.index === 5);
+      : scope === "team"
+        ? tabDefinitions.filter((item) => role === "Supervisor" && item.index === 6)
+        : tabDefinitions.filter((item) => item.index === 0 || (role !== "Supervisor" && (item.index === 1 || item.index === 5)));
+  const supervisorOrdersPanel = (
+    <Paper sx={{ p: 3 }}>
+      <Typography variant="h6" sx={{ mb: 2 }}>Órdenes de trabajo del equipo</Typography>
+      {visibleOrders.filter((order) => order.status !== "Cerrada" && supervisorCanSeeOrder(order)).length === 0 ? (
+        <Alert severity="info">No hay órdenes abiertas para los contratos o trabajadores de tu equipo.</Alert>
+      ) : (
+        <Table size="small">
+          <TableHead><TableRow><TableCell>OT / equipo</TableCell><TableCell>Trabajo</TableCell><TableCell>Estado</TableCell><TableCell>Asignado a</TableCell><TableCell>Asignar trabajador</TableCell></TableRow></TableHead>
+          <TableBody>{visibleOrders.filter((order) => order.status !== "Cerrada" && supervisorCanSeeOrder(order)).map((order) => (
+            <TableRow key={order.id}>
+              <TableCell>{order.id}<Typography variant="caption" sx={{ display: "block" }}>{order.equipment}</Typography></TableCell>
+              <TableCell>{order.description}</TableCell>
+              <TableCell><OrderStatusChip status={order.status} /></TableCell>
+              <TableCell>{order.technician || "Sin asignar"}</TableCell>
+              <TableCell>
+                {order.status === "Asignada" && assignableTeam.length > 0 ? (
+                  <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                    <TextField select size="small" label="Trabajador" value={assignmentDrafts[order.id] ?? assignableTeam.find((employee) => employee.name === order.technician)?.id ?? assignableTeam[0].id} onChange={(event) => setAssignmentDrafts((current) => ({ ...current, [order.id]: event.target.value }))}>
+                      {assignableTeam.map((employee) => <MenuItem key={employee.id} value={employee.id}>{employee.name}</MenuItem>)}
+                    </TextField>
+                    <Button size="small" variant="contained" onClick={() => assignOrderToTeamMember(order)}>Asignar</Button>
+                  </Stack>
+                ) : order.status === "Asignada" ? "No hay técnicos directos configurados" : "Solo consulta"}
+              </TableCell>
+            </TableRow>
+          ))}</TableBody>
+        </Table>
+      )}
+    </Paper>
+  );
 
   useEffect(() => {
     localStorage.setItem(ordersStorageKey, JSON.stringify(orders));
@@ -641,6 +749,32 @@ export default function WorkOrders({
   const updateOrder = (orderId: string, update: (order: WorkOrder) => WorkOrder) => {
     setOrders((current) => current.map((order) => order.id === orderId ? update(order) : order));
   };
+
+  function assignOrderToTeamMember(order: WorkOrder) {
+    if (role !== "Supervisor" || !supervisorEmployee || order.status !== "Asignada") {
+      setError("Solo puedes asignar órdenes pendientes a personal de tu equipo.");
+      return;
+    }
+    const employeeId = assignmentDrafts[order.id] ?? assignableTeam[0]?.id;
+    const employee = assignableTeam.find((item) => item.id === employeeId);
+    if (!employee) {
+      setError("Selecciona un trabajador que pertenezca a tu equipo.");
+      return;
+    }
+    const profile = technicianProfiles.find((item) => item.name === employee.name);
+    if (!profile) {
+      setError("El trabajador seleccionado no tiene un perfil técnico directo habilitado.");
+      return;
+    }
+    updateOrder(order.id, (current) => ({
+      ...current,
+      technician: employee.name,
+      hourlyRate: profile.rate,
+      projectedLaborCost: profile.rate * current.projectedHours,
+    }));
+    setError("");
+    setMessage(`${order.id} asignada a ${employee.name}.`);
+  }
 
   function averageUnitCost(code: string): number {
     const bins = stock.filter((bin) => bin.code === code && bin.quantity > 0);
@@ -679,7 +813,9 @@ export default function WorkOrders({
     }
     const projectedHours = route?.operations.reduce((sum, item) => sum + item.durationHours, 0) ?? 0;
     const selectedContract = contracts.find((contract) => contract.code === selectedPlan?.contract) ?? currentContract;
-    const technician = technicianProfiles.find((item) => item.name === newOrder.technician) ?? technicianProfiles[0];
+    const technician = newOrder.technician
+      ? technicianProfiles.find((item) => item.name === newOrder.technician) ?? technicianProfiles[0]
+      : undefined;
     const id = `OT-${2051 + orders.length}`;
     setOrders((current) => [...current, {
       id,
@@ -692,8 +828,8 @@ export default function WorkOrders({
       type: newOrder.type,
       equipment: selectedPlan?.equipmentId || newOrder.equipment.trim(),
       description: `${newOrder.description.trim()}${selectedPlan ? ` · Plan ${selectedPlan.id}` : ""}`,
-      technician: technician.name,
-      hourlyRate: technician.rate,
+      technician: technician?.name ?? "",
+      hourlyRate: technician?.rate ?? 0,
       projectedHours,
       projectedLaborCost: route ? routeLaborCost(route) : 0,
       elapsedSeconds: 0,
@@ -729,7 +865,6 @@ export default function WorkOrders({
     const contract = contracts.find((item) => item.code === call.plan.contract) ?? contracts[0];
     const wbsElement = contract.wbs.find((item) => item.code === call.plan.wbs);
     const orderType = wbsElement?.type && wbsElement.type !== "ESPERA" ? wbsElement.type : "PRE";
-    const technician = technicianProfiles[0];
     const id = `OT-${2051 + orders.length}`;
     setOrders((current) => [...current, {
       id,
@@ -743,8 +878,8 @@ export default function WorkOrders({
       type: orderType,
       equipment: call.plan.equipmentId,
       description: `Llamada ${call.id} · ${call.plan.name} · fecha requerida ${call.dueDate.slice(0, 10)}`,
-      technician: technician.name,
-      hourlyRate: technician.rate,
+      technician: "",
+      hourlyRate: 0,
       projectedHours: route.operations.reduce((sum, operation) => sum + operation.durationHours, 0),
       projectedLaborCost: routeLaborCost(route),
       elapsedSeconds: 0,
@@ -813,7 +948,7 @@ export default function WorkOrders({
   };
 
   const supervisorClose = (orderId: string) => {
-    if (!isSupervisor) return;
+    if (!canCloseOrders) return;
     const order = orders.find((item) => item.id === orderId);
     if (order?.timerStartedAt) {
       setError("El técnico debe detener el cronómetro antes del cierre final.");
@@ -828,13 +963,13 @@ export default function WorkOrders({
       return;
     }
     updateOrder(orderId, (item) => ({ ...item, status: "Cerrada", supervisorClosedBy: user }));
-    setMessage(`${orderId} cerrada por supervisor ${user}.`);
+    setMessage(`${orderId} cerrada por ${user}.`);
     setError("");
   };
 
   const reopenOrder = (orderId: string) => {
-    if (!isSupervisor) {
-      setError("Solo Supervisor o Administrador puede reabrir una OT cerrada.");
+    if (!canCloseOrders) {
+      setError("Solo Administrador puede reabrir una OT cerrada.");
       return;
     }
     updateOrder(orderId, (order) => ({
@@ -1187,13 +1322,13 @@ export default function WorkOrders({
     setError("");
   };
 
-  const putawayStock = (binId: string) => {
+  const putawayStock = (binId: string, requestedLocation?: string) => {
     if (!canPutaway) {
       setError("Tu rol no tiene permiso para ubicar materiales.");
       return;
     }
     const bin = stock.find((item) => item.id === binId);
-    const location = (putawayLocations[binId] ?? "").trim().toUpperCase();
+    const location = (requestedLocation ?? putawayLocations[binId] ?? "").trim().toUpperCase();
     if (!bin || bin.status !== "Libre utilización" || bin.location !== "REC-UBICAR") {
       setError("Solo se pueden ubicar materiales liberados que estén en zona de recepción.");
       return;
@@ -1218,6 +1353,15 @@ export default function WorkOrders({
     setPutawayLocations((current) => ({ ...current, [binId]: "" }));
     setMessage(`${bin.code} ubicado en ${destinationWarehouse}/${location}.`);
     setError("");
+  };
+
+  const putawayStockGroup = (group: StockBinGroup) => {
+    const location = (putawayLocations[group.id] ?? "").trim().toUpperCase();
+    if (!location || location === "REC-UBICAR" || location === "REC-CALIDAD" || location === "TRANSITO") {
+      setError("Ingresa una ubicación definitiva válida, por ejemplo A-01-02.");
+      return;
+    }
+    group.sourceBins.forEach((bin) => putawayStock(bin.id, location));
   };
 
   const performCycleCount = (event: FormEvent<HTMLFormElement>) => {
@@ -1316,8 +1460,8 @@ export default function WorkOrders({
     setWarehouseImportError("");
     setWarehouseImportMessage("");
     if (!file) return;
-    if (role !== "Administrador" && role !== "Compras") {
-      setWarehouseImportError("Solo Compras o Administrador puede importar saldos iniciales.");
+    if (role !== "Administrador") {
+      setWarehouseImportError("Solo el Administrador puede realizar cargas masivas de saldos iniciales.");
       return;
     }
     try {
@@ -1416,7 +1560,7 @@ export default function WorkOrders({
     <Stack spacing={3}>
       <Box>
         <Typography variant="h4" sx={{ fontWeight: 700 }}>
-          {scope === "warehouse" ? "Almacén y logística" : scope === "quality" ? "Calidad e inspecciones" : "Operaciones y órdenes de trabajo"}
+          {scope === "warehouse" ? "Almacén y logística" : scope === "quality" ? "Calidad e inspecciones" : scope === "team" ? "Personal del equipo" : "Operaciones y órdenes de trabajo"}
         </Typography>
         <Typography color="text.secondary">
           Demostración con datos ficticios del contrato CT1234.
@@ -1428,7 +1572,7 @@ export default function WorkOrders({
       {message && <Alert severity="success">{message}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
 
-      {scope === "operations" && (
+      {scope === "operations" && role !== "Supervisor" && (
         <Grid container spacing={2}>
           {[
             { label: "Presupuesto CT1234", value: money(totalBudget) },
@@ -1539,6 +1683,7 @@ export default function WorkOrders({
                 </Grid>
                 <Grid size={{ xs: 12, sm: 6, lg: 2 }}>
                   <TextField select label="Técnico" value={newOrder.technician} onChange={(event) => setNewOrder((current) => ({ ...current, technician: event.target.value }))} fullWidth>
+                    <MenuItem value="">Sin asignar · Supervisor asigna equipo</MenuItem>
                     {technicianProfiles.map((technician) => <MenuItem key={technician.name} value={technician.name}>{technician.name} · {money(technician.rate)}/h</MenuItem>)}
                   </TextField>
                 </Grid>
@@ -1549,7 +1694,19 @@ export default function WorkOrders({
                   <Button type="submit" variant="contained" startIcon={<Add />} sx={{ height: 56 }} fullWidth>Crear</Button>
                 </Grid>
                 <Grid size={{ xs: 12, md: 4 }}>
-                  <TextField label="Equipo / activo" value={newOrder.equipment} onChange={(event) => setNewOrder((current) => ({ ...current, equipment: event.target.value }))} required fullWidth />
+                  <TextField select label="Equipo / activo (maestro)" value={newOrder.equipment} onChange={(event) => {
+                    const selectedEquipment = readEquipmentMaster().find((item) => item.code === event.target.value);
+                    setNewOrder((current) => ({
+                      ...current,
+                      equipment: event.target.value,
+                      contract: selectedEquipment?.contractCode && contracts.some((contract) => contract.code === selectedEquipment.contractCode)
+                        ? selectedEquipment.contractCode
+                        : current.contract,
+                    }));
+                  }} required fullWidth>
+                    <MenuItem value="">Selecciona un equipo</MenuItem>
+                    {equipmentOptions.map((item) => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}
+                  </TextField>
                 </Grid>
                 <Grid size={{ xs: 12, md: 8 }}>
                   <TextField label="Descripción del trabajo" value={newOrder.description} onChange={(event) => setNewOrder((current) => ({ ...current, description: event.target.value }))} required fullWidth />
@@ -1576,61 +1733,74 @@ export default function WorkOrders({
               <Box>
                 <Typography variant="h6">Bandeja de trabajo</Typography>
                 <Typography variant="body2" color="text.secondary">
-                  El técnico registra su tiempo; el cierre provisorio requiere aprobación del supervisor.
+                  {isSupervisor
+                    ? "Revisa las órdenes asignadas a tu equipo y asígnalas a los trabajadores a tu cargo."
+                    : "El técnico registra su tiempo; el cierre provisorio requiere aprobación de Calidad y cierre administrativo."}
                 </Typography>
               </Box>
-              <Button startIcon={<Download />} onClick={exportOrderTemplate}>Plantilla CSV de OT</Button>
+              {!isSupervisor && <Button startIcon={<Download />} onClick={exportOrderTemplate}>Plantilla CSV de OT</Button>}
             </Stack>
             <Table size="small">
               <TableHead><TableRow>
-                <TableCell>OT / equipo</TableCell><TableCell>Contrato / WBS</TableCell><TableCell>Tipo / estado</TableCell><TableCell>Técnico / tarifa</TableCell><TableCell>Tiempo plan / real</TableCell><TableCell align="right">Costo real</TableCell><TableCell>Acciones</TableCell>
+                <TableCell>OT / equipo</TableCell>
+                {!isSupervisor && <TableCell>Contrato / WBS</TableCell>}
+                <TableCell>Tipo / estado</TableCell>
+                <TableCell>{isSupervisor ? "Trabajador asignado" : "Técnico / tarifa"}</TableCell>
+                {!isSupervisor && <><TableCell>Tiempo plan / real</TableCell><TableCell align="right">Costo real</TableCell></>}
+                <TableCell>Acciones</TableCell>
               </TableRow></TableHead>
-              <TableBody>{visibleOrders.filter((order) => order.status !== "Cerrada").map((order) => (
+              <TableBody>{visibleOrders.filter((order) => order.status !== "Cerrada" && supervisorCanSeeOrder(order)).map((order) => (
                 <TableRow key={order.id}>
                   <TableCell>
                     <Typography sx={{ fontWeight: 700 }}>{order.id}</Typography>
                     <Typography variant="caption" color="text.secondary">{order.equipment}</Typography>
                     <Typography sx={{ display: "block" }} variant="caption">{order.description}</Typography>
-                    {order.routeName && <Typography sx={{ display: "block" }} variant="caption" color="primary.main">Ruta {order.routeId} · {order.routeName}</Typography>}
+                    {!isSupervisor && order.routeName && <Typography sx={{ display: "block" }} variant="caption" color="primary.main">Ruta {order.routeId} · {order.routeName}</Typography>}
                     {order.requiredMaterials.length > 0 && <Typography sx={{ display: "block" }} variant="caption" color="text.secondary">Materiales requeridos: {order.requiredMaterials.map((item) => `${item.code} ${item.quantity} ${item.unit ?? ""}`).join(" · ")}</Typography>}
-                    {order.routeOperations?.map((operation) => (
+                    {!isSupervisor && order.routeOperations?.map((operation) => (
                       <Typography key={`${order.id}-${operation.order}`} sx={{ display: "block" }} variant="caption" color="text.secondary">
                         {operation.order}. {operation.name} · {operation.durationHours} h
                       </Typography>
                     ))}
                   </TableCell>
-                  <TableCell>{order.contract}<Typography sx={{ display: "block" }} variant="caption" color="text.secondary">{order.wbs || "No imputable"}</Typography></TableCell>
+                  {!isSupervisor && <TableCell>{order.contract}<Typography sx={{ display: "block" }} variant="caption" color="text.secondary">{order.wbs || "No imputable"}</Typography></TableCell>}
                   <TableCell>
                     {typeLabels[order.type]}
                     <Typography sx={{ display: "block", mt: 0.5 }}><OrderStatusChip status={order.status} /></Typography>
-                    {order.qualityApproved && <Typography variant="caption" color="success.main">Calidad OK · {order.qualityApprovedBy}</Typography>}
+                    {!isSupervisor && order.qualityApproved && <Typography variant="caption" color="success.main">Calidad OK · {order.qualityApprovedBy}</Typography>}
                   </TableCell>
-                  <TableCell>{order.technician}<Typography sx={{ display: "block" }} variant="caption" color="text.secondary">{money(order.hourlyRate)}/h</Typography></TableCell>
-                  <TableCell>{order.projectedHours.toFixed(1)} h / {durationLabel(order.currentSeconds)}</TableCell>
-                  <TableCell align="right">{money(allocatedCost(order, stock, order.currentSeconds))}</TableCell>
+                  <TableCell>
+                    {order.technician || "Sin asignar"}
+                    {!isSupervisor && <Typography sx={{ display: "block" }} variant="caption" color="text.secondary">{money(order.hourlyRate)}/h</Typography>}
+                  </TableCell>
+                  {!isSupervisor && <><TableCell>{order.projectedHours.toFixed(1)} h / {durationLabel(order.currentSeconds)}</TableCell><TableCell align="right">{money(allocatedCost(order, stock, order.currentSeconds))}</TableCell></>}
                   <TableCell>
                     <Stack direction="row" sx={{ flexWrap: "wrap", gap: 1 }}>
-                      {!order.timerStartedAt && order.status !== "Cerrada" && order.status !== "Cierre provisorio" && <Button size="small" startIcon={<PlayArrow />} onClick={() => startTimer(order.id)}>Iniciar</Button>}
-                      {order.timerStartedAt && <Button size="small" color="warning" startIcon={<Stop />} onClick={() => stopTimer(order.id)}>Detener</Button>}
-                      {order.status !== "Cerrada" && order.status !== "Cierre provisorio" && <Button size="small" onClick={() => provisionalClose(order.id)}>Cierre provisorio</Button>}
-                      {isSupervisor && order.status === "Cierre provisorio" && <Button size="small" variant="contained" color="success" onClick={() => supervisorClose(order.id)}>Cerrar OT</Button>}
+                      {isSupervisor && assignableTeam.length > 0 && order.status === "Asignada" && (
+                        <>
+                          <TextField select size="small" label="Asignar a" value={assignmentDrafts[order.id] ?? assignableTeam.find((employee) => employee.name === order.technician)?.id ?? assignableTeam[0].id} onChange={(event) => setAssignmentDrafts((current) => ({ ...current, [order.id]: event.target.value }))}>
+                            {assignableTeam.map((employee) => <MenuItem key={employee.id} value={employee.id}>{employee.name}</MenuItem>)}
+                          </TextField>
+                          <Button size="small" variant="contained" onClick={() => assignOrderToTeamMember(order)}>Asignar</Button>
+                        </>
+                      )}
+                      {!isSupervisor && !order.timerStartedAt && order.status !== "Cerrada" && order.status !== "Cierre provisorio" && <Button size="small" startIcon={<PlayArrow />} onClick={() => startTimer(order.id)}>Iniciar</Button>}
+                      {!isSupervisor && order.timerStartedAt && <Button size="small" color="warning" startIcon={<Stop />} onClick={() => stopTimer(order.id)}>Detener</Button>}
+                      {!isSupervisor && order.status !== "Cerrada" && order.status !== "Cierre provisorio" && <Button size="small" onClick={() => provisionalClose(order.id)}>Cierre provisorio</Button>}
+                      {canCloseOrders && order.status === "Cierre provisorio" && <Button size="small" variant="contained" color="success" onClick={() => supervisorClose(order.id)}>Cerrar OT</Button>}
                     </Stack>
-                    {order.supervisorClosedBy && <Typography variant="caption">Cerró: {order.supervisorClosedBy}</Typography>}
+                    {!isSupervisor && order.supervisorClosedBy && <Typography variant="caption">Cerró: {order.supervisorClosedBy}</Typography>}
                   </TableCell>
                 </TableRow>
               ))}</TableBody>
             </Table>
-            {activeOrder && <Alert severity="info" sx={{ mt: 2 }}>Cronómetro activo: {activeOrder.id} · {durationLabel(visibleOrders.find((order) => order.id === activeOrder.id)?.currentSeconds ?? 0)}.</Alert>}
+            {!isSupervisor && activeOrder && <Alert severity="info" sx={{ mt: 2 }}>Cronómetro activo: {activeOrder.id} · {durationLabel(visibleOrders.find((order) => order.id === activeOrder.id)?.currentSeconds ?? 0)}.</Alert>}
           </Paper>
-          <Alert severity={isSupervisor ? "success" : "info"}>
-            {isSupervisor
-              ? `Sesión ${role}: puedes cerrar una OT provisoria cuando Calidad la haya aprobado.`
-              : `Sesión ${role}: el cierre final requiere aprobación de Calidad y luego un Supervisor o Administrador.`}
-          </Alert>
+          {!isSupervisor && <Alert severity="info">El cierre final requiere aprobación de Calidad y luego un Administrador.</Alert>}
         </Stack>
       )}
 
-      {tab === 5 && isSupervisor && scope === "operations" && (
+      {tab === 5 && canCloseOrders && scope === "operations" && (
         <Paper sx={{ p: 3 }}>
           <Typography variant="h6" sx={{ mb: 2 }}>Órdenes cerradas · archivo de Supervisor</Typography>
           {visibleOrders.filter((order) => order.status === "Cerrada").length === 0 ? (
@@ -1649,7 +1819,35 @@ export default function WorkOrders({
               ))}</TableBody>
             </Table>
           )}
+
         </Paper>
+      )}
+
+      {tab === 0 && isSupervisor && scope === "operations" && supervisorOrdersPanel}
+
+      {tab === 6 && isSupervisor && scope === "team" && (
+        <Stack spacing={3}>
+          <Paper sx={{ p: 3 }}>
+            <Typography variant="h6" sx={{ mb: 2 }}>Personal a cargo</Typography>
+            {!supervisorEmployee ? (
+              <Alert severity="warning">Esta cuenta no está vinculada a un supervisor. Solicita al Administrador que configure el usuario en Recursos Humanos.</Alert>
+            ) : supervisorTeam.length === 0 ? (
+              <Alert severity="info">No hay trabajadores asignados a {supervisorEmployee.name}.</Alert>
+            ) : (
+              <Table size="small">
+                <TableHead><TableRow><TableCell>Trabajador</TableCell><TableCell>Cargo / especialidad</TableCell><TableCell>Contratos asignados</TableCell></TableRow></TableHead>
+                <TableBody>{supervisorTeam.map((employee) => (
+                  <TableRow key={employee.id}>
+                    <TableCell>{employee.name}</TableCell>
+                    <TableCell>{employee.position}</TableCell>
+                    <TableCell>{(employee.contractCodes?.length ? employee.contractCodes : employee.contractCode ? [employee.contractCode] : []).join(", ") || "—"}</TableCell>
+                  </TableRow>
+                ))}</TableBody>
+              </Table>
+            )}
+          </Paper>
+          {supervisorOrdersPanel}
+        </Stack>
       )}
 
       {tab === 1 && (
@@ -1679,8 +1877,71 @@ export default function WorkOrders({
         </Stack>
       )}
 
-      {tab === 2 && (
+      {tab === 2 && isSupervisor && scope === "warehouse" && (
+        <Stack spacing={2}>
+          <Paper sx={{ p: 3 }}>
+            <Typography variant="h6" sx={{ mb: 1 }}>Stock disponible para uso</Typography>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Solo se muestran materiales en estado Libre utilización, descontando las cantidades reservadas.
+            </Typography>
+            <TextField
+              label="Buscar material, almacén o ubicación"
+              value={stockFilter}
+              onChange={(event) => setStockFilter(event.target.value)}
+              fullWidth
+              sx={{ mb: 2 }}
+            />
+            {supervisorAvailableStock.length === 0 ? (
+              <Alert severity="info">No hay stock disponible para uso que coincida con la búsqueda.</Alert>
+            ) : (
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Material</TableCell>
+                    <TableCell>Almacén</TableCell>
+                    <TableCell>Ubicación</TableCell>
+                    <TableCell align="right">Disponible</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {supervisorAvailableStock.map((bin) => (
+                    <TableRow key={bin.id}>
+                      <TableCell>{bin.code} · {bin.name}{bin.sourceBins.length > 1 && <Typography variant="caption" sx={{ display: "block" }}>{bin.sourceBins.length} registros acumulados</Typography>}</TableCell>
+                      <TableCell>{bin.warehouse}</TableCell>
+                      <TableCell>{bin.location}</TableCell>
+                      <TableCell align="right">{bin.quantity - bin.reserved} {bin.unit}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </Paper>
+        </Stack>
+      )}
+
+      {tab === 2 && !(isSupervisor && scope === "warehouse") && (
         <Stack spacing={3}>
+          {isSupervisor && (
+            <Paper sx={{ p: 3 }}>
+              <Typography variant="h6" sx={{ mb: 2 }}>Personal a cargo</Typography>
+              {!supervisorEmployee ? (
+                <Alert severity="warning">Esta cuenta no está vinculada a un supervisor en Recursos Humanos. Pide al Administrador que configure el usuario del supervisor antes de asignar OT.</Alert>
+              ) : supervisorTeam.length === 0 ? (
+                <Alert severity="info">No hay trabajadores asignados a {supervisorEmployee.name}.</Alert>
+              ) : (
+                <Table size="small">
+                  <TableHead><TableRow><TableCell>Trabajador</TableCell><TableCell>Cargo / especialidad</TableCell><TableCell>Contratos asignados</TableCell></TableRow></TableHead>
+                  <TableBody>{supervisorTeam.map((employee) => (
+                    <TableRow key={employee.id}>
+                      <TableCell>{employee.name}</TableCell>
+                      <TableCell>{employee.position}</TableCell>
+                      <TableCell>{(employee.contractCodes?.length ? employee.contractCodes : employee.contractCode ? [employee.contractCode] : []).join(", ") || "—"}</TableCell>
+                    </TableRow>
+                  ))}</TableBody>
+                </Table>
+              )}
+            </Paper>
+          )}
           <Paper sx={{ p: 3 }}>
             <Stack direction={{ xs: "column", md: "row" }} sx={{ justifyContent: "space-between", alignItems: { xs: "flex-start", md: "center" }, gap: 2, mb: 2 }}>
               <Box>
@@ -1689,10 +1950,10 @@ export default function WorkOrders({
               </Box>
               <Stack direction="row" sx={{ flexWrap: "wrap", gap: 1 }}>
                 <Button startIcon={<Download />} onClick={exportWarehouseTemplate}>Plantilla CSV</Button>
-                <Button component="label" variant="outlined" startIcon={<Add />}>
+                {role === "Administrador" && <Button component="label" variant="outlined" startIcon={<Add />}>
                   Importar saldos
                   <input hidden type="file" accept=".csv,text/csv" onChange={importWarehouseCsv} />
-                </Button>
+                </Button>}
               </Stack>
             </Stack>
             {warehouseImportMessage && <Alert severity="success" sx={{ mb: 2 }}>{warehouseImportMessage}</Alert>}
@@ -1737,14 +1998,16 @@ export default function WorkOrders({
                     <TableRow key={item.code}>
                       <TableCell>{item.locations || "Sin stock disponible"}</TableCell><TableCell>{item.code} · {item.name}</TableCell>
                       <TableCell align="right">{item.remaining} {item.unit}</TableCell><TableCell align="right">{item.reserved || item.planned} {item.unit}</TableCell>
-                      <TableCell><TextField size="small" type="number" value={pickingTaken[`${selectedWarehouseOrder.id}:${item.code}`] ?? ""} onChange={(event) => setPickingTaken((current) => ({ ...current, [`${selectedWarehouseOrder.id}:${item.code}`]: event.target.value }))} slotProps={{ htmlInput: { min: 0, max: item.remaining, step: "any" } }} sx={{ width: 130 }} /></TableCell>
+                      <TableCell><TextField size="small" type="number" value={pickingTaken[`${selectedWarehouseOrder.id}:${item.code}`] ?? ""} disabled={isSupervisor} onChange={(event) => setPickingTaken((current) => ({ ...current, [`${selectedWarehouseOrder.id}:${item.code}`]: event.target.value }))} slotProps={{ htmlInput: { min: 0, max: item.remaining, step: "any" } }} sx={{ width: 130 }} /></TableCell>
                     </TableRow>
                   ))}</TableBody>
                 </Table>
                 <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                  <Button size="small" disabled={!["Administrador", "Supervisor", "Producción", "Industrial"].includes(role)} onClick={() => preparePicking(selectedWarehouseOrder)}>Preparar picking</Button>
-                  <Button size="small" variant="contained" disabled={!selectedWarehouseOrder.reservedPicks?.length || !["Administrador", "Supervisor", "Producción", "Industrial"].includes(role)} onClick={() => confirmConsumption(selectedWarehouseOrder)}>Confirmar cantidades tomadas</Button>
-                  <Button size="small" color="warning" disabled={!selectedWarehouseOrder.reservedPicks?.length || !["Administrador", "Supervisor", "Producción", "Industrial"].includes(role)} onClick={() => releasePicking(selectedWarehouseOrder)}>Liberar reserva</Button>
+                  {role !== "Supervisor" && <>
+                    <Button size="small" disabled={!canChangePicking} onClick={() => preparePicking(selectedWarehouseOrder)}>Preparar picking</Button>
+                    <Button size="small" variant="contained" disabled={!selectedWarehouseOrder.reservedPicks?.length || !canChangePicking} onClick={() => confirmConsumption(selectedWarehouseOrder)}>Confirmar cantidades tomadas</Button>
+                    <Button size="small" color="warning" disabled={!selectedWarehouseOrder.reservedPicks?.length || !canChangePicking} onClick={() => releasePicking(selectedWarehouseOrder)}>Liberar reserva</Button>
+                  </>}
                 </Stack>
               </Paper>
             )}
@@ -1765,8 +2028,8 @@ export default function WorkOrders({
                   {transitLines.map((bin) => <MenuItem key={`${bin.reference}-${bin.id}`} value={bin.reference}>{bin.reference} · {bin.code} · quedan {bin.quantity} {bin.unit}</MenuItem>)}
                 </TextField>
                 <TextField label="Material" value={selectedTransitLine?.name ?? receipt.code} slotProps={{ input: { readOnly: true } }} />
-                <TextField label="Cantidad recibida" type="number" value={receipt.quantity} onChange={(event) => setReceipt((current) => ({ ...current, quantity: event.target.value }))} slotProps={{ htmlInput: { min: 1, max: selectedTransitLine?.quantity ?? 1, step: 1 } }} />
-                <TextField select label="Inspección de Calidad" value={receipt.qualityHold ? "hold" : "release"} onChange={(event) => setReceipt((current) => ({ ...current, qualityHold: event.target.value === "hold" }))}>
+                <TextField label="Cantidad recibida" type="number" value={receipt.quantity} disabled={isSupervisor} onChange={(event) => setReceipt((current) => ({ ...current, quantity: event.target.value }))} slotProps={{ htmlInput: { min: 1, max: selectedTransitLine?.quantity ?? 1, step: 1 } }} />
+                <TextField select label="Inspección de Calidad" value={receipt.qualityHold ? "hold" : "release"} disabled={isSupervisor} onChange={(event) => setReceipt((current) => ({ ...current, qualityHold: event.target.value === "hold" }))}>
                   <MenuItem value="hold">Bloquear hasta inspección</MenuItem>
                   <MenuItem value="release">Sin inspección obligatoria</MenuItem>
                 </TextField>
@@ -1775,21 +2038,21 @@ export default function WorkOrders({
               {!canReceive && <Alert severity="info">La recepción desde OC está habilitada para Compras y Administrador.</Alert>}
               <TextField label="Buscar por material, almacén, ubicación, estado u OC" value={stockFilter} onChange={(event) => setStockFilter(event.target.value)} />
               <Table size="small">
-                <TableHead><TableRow><TableCell>Material / lote</TableCell><TableCell>Almacén / ubicación</TableCell><TableCell>Estado</TableCell><TableCell align="right">Físico</TableCell><TableCell align="right">Reservado</TableCell><TableCell align="right">Disponible</TableCell><TableCell align="right">Costo unit.</TableCell><TableCell>Acción</TableCell></TableRow></TableHead>
+                <TableHead><TableRow><TableCell>Material / lote</TableCell><TableCell>Almacén / ubicación</TableCell><TableCell>Estado</TableCell><TableCell align="right">Físico</TableCell><TableCell align="right">Reservado</TableCell><TableCell align="right">Disponible</TableCell>{!isSupervisor && <TableCell align="right">Costo unit.</TableCell>}<TableCell>Acción</TableCell></TableRow></TableHead>
                 <TableBody>{visibleStock.map((bin) => (
                   <TableRow key={bin.id}>
-                    <TableCell>{bin.code} · {bin.name}<Typography variant="caption" sx={{ display: "block" }}>{bin.reference ?? bin.id}</Typography></TableCell>
+                    <TableCell>{bin.code} · {bin.name}<Typography variant="caption" sx={{ display: "block" }}>{bin.sourceBins.length > 1 ? `${bin.sourceBins.length} registros acumulados` : bin.reference ?? bin.id}</Typography></TableCell>
                     <TableCell>{bin.warehouse} · {bin.location}</TableCell>
                     <TableCell><Chip size="small" label={bin.status} color={bin.status === "Libre utilización" ? "success" : bin.status === "Bloqueado calidad" ? "warning" : "info"} /></TableCell>
                     <TableCell align="right">{bin.quantity} {bin.unit}</TableCell>
                     <TableCell align="right">{bin.reserved} {bin.unit}</TableCell>
                     <TableCell align="right">{bin.status === "Libre utilización" && isPickableLocation(bin.location) ? bin.quantity - bin.reserved : 0} {bin.unit}</TableCell>
-                    <TableCell align="right">{money(bin.unitCost)}</TableCell>
+                    {!isSupervisor && <TableCell align="right">{money(bin.unitCost)}</TableCell>}
                     <TableCell>
                       {bin.status === "Bloqueado calidad" && (role === "Calidad" || role === "Administrador")
-                        ? <Button size="small" onClick={() => releaseQualityStock(bin.id)}>Liberar QC</Button>
+                        ? <Button size="small" onClick={() => bin.sourceBins.forEach((sourceBin) => releaseQualityStock(sourceBin.id))}>Liberar QC</Button>
                         : bin.status === "Libre utilización" && bin.location === "REC-UBICAR" && canPutaway
-                          ? <Stack direction="row" spacing={1}><TextField size="small" label="Ubicación" value={putawayLocations[bin.id] ?? ""} onChange={(event) => setPutawayLocations((current) => ({ ...current, [bin.id]: event.target.value }))} /><Button size="small" onClick={() => putawayStock(bin.id)}>Ubicar</Button></Stack>
+                          ? <Stack direction="row" spacing={1}><TextField size="small" label="Ubicación" value={putawayLocations[bin.id] ?? ""} onChange={(event) => setPutawayLocations((current) => ({ ...current, [bin.id]: event.target.value }))} /><Button size="small" onClick={() => putawayStockGroup(bin)}>Ubicar</Button></Stack>
                           : "—"}
                     </TableCell>
                   </TableRow>
@@ -1815,10 +2078,10 @@ export default function WorkOrders({
                 </TextField>
                 <TextField label="Cantidad contada" type="number" value={cycleCount.countedQuantity} onChange={(event) => setCycleCount((current) => ({ ...current, countedQuantity: event.target.value }))} slotProps={{ htmlInput: { min: 0, step: 1 } }} />
                 <Button type="submit" variant="contained" disabled={!canCount}>Aplicar conteo</Button>
-                <Button component="label" variant="outlined">
+                {role === "Administrador" && <Button component="label" variant="outlined">
                   Importar saldos CSV
                   <input hidden type="file" accept=".csv,text/csv" onChange={importWarehouseCsv} />
-                </Button>
+                </Button>}
               </Stack>
               <Divider />
               <Typography variant="h6">Traslado entre almacenes</Typography>

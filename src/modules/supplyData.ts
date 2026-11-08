@@ -1,5 +1,11 @@
 export const purchaseRequestsStorageKey = "pmoptimizer-purchase-requests";
 export const purchaseOrdersStorageKey = "pmoptimizer-purchase-orders";
+export const suppliersStorageKey = "pmoptimizer-suppliers";
+
+export type SupplierMaster = {
+  id: string;
+  name: string;
+};
 
 export type PurchaseRequestStatus =
   | "Pendiente cotización"

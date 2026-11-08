@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { FormEvent } from "react";
 import {
   Alert,
+  Box,
   Button,
   Chip,
   MenuItem,
@@ -14,14 +16,15 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { CheckCircleOutlined, ShoppingCart } from "@mui/icons-material";
+import { CheckCircleOutlined, Print, ShoppingCart } from "@mui/icons-material";
 import {
   makeSupplyId,
   purchaseOrdersStorageKey,
   purchaseRequestsStorageKey,
   readStoredList,
+  suppliersStorageKey,
 } from "./supplyData";
-import type { PurchaseOrder, PurchaseQuote, PurchaseRequest } from "./supplyData";
+import type { PurchaseOrder, PurchaseQuote, PurchaseRequest, SupplierMaster } from "./supplyData";
 
 type RoleName = "Administrador" | "Supervisor" | "Planificador" | "PM Proyecto" | "Compras" | "Contabilidad" | "Producción" | "Industrial" | "Ingeniería" | "Calidad";
 type QuoteDraft = { supplier: string; unitCost: string; expectedDate: string };
@@ -36,12 +39,55 @@ export default function PurchasingPage({ role, user }: { role: RoleName; user: s
     readStoredList<PurchaseRequest>(purchaseRequestsStorageKey));
   const [orders, setOrders] = useState<PurchaseOrder[]>(() =>
     readStoredList<PurchaseOrder>(purchaseOrdersStorageKey));
+  const [suppliers, setSuppliers] = useState<SupplierMaster[]>(() => {
+    const saved = readStoredList<SupplierMaster>(suppliersStorageKey);
+    const historicalNames = [
+      ...orders.map((order) => order.supplier),
+      ...requests.flatMap((request) => request.quotes?.map((quote) => quote.supplier) ?? []),
+    ];
+    const names = [...new Set([...saved.map((supplier) => supplier.name), ...historicalNames].filter(Boolean))];
+    return names.map((name) => saved.find((supplier) => supplier.name === name) ?? {
+      id: makeSupplyId("PROV"),
+      name,
+    });
+  });
+  const [supplierName, setSupplierName] = useState("");
   const [drafts, setDrafts] = useState<Record<string, QuoteDraft[]>>({});
   const [selectedQuotes, setSelectedQuotes] = useState<Record<string, string>>({});
+  const [printOrder, setPrintOrder] = useState<PurchaseOrder | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const canApprove = role === "Administrador" || role === "PM Proyecto";
   const canQuote = role === "Administrador" || role === "Compras";
+
+  const addSupplier = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = supplierName.trim();
+    if (!name || suppliers.some((supplier) => supplier.name.toLowerCase() === name.toLowerCase())) {
+      setError("Ingresa un nombre de proveedor único para guardarlo en el maestro.");
+      return;
+    }
+    const next = [...suppliers, { id: makeSupplyId("PROV"), name }];
+    try {
+      localStorage.setItem(suppliersStorageKey, JSON.stringify(next));
+      setSuppliers(next);
+      setSupplierName("");
+      setError("");
+      setMessage(`Proveedor ${name} agregado al maestro.`);
+    } catch (cause) {
+      console.error("No se pudo guardar el proveedor.", cause);
+      setError("No se pudo guardar el proveedor en este navegador.");
+    }
+  };
+
+  useEffect(() => {
+    if (!printOrder) return;
+    const timer = window.setTimeout(() => {
+      window.print();
+      setPrintOrder(null);
+    }, 100);
+    return () => window.clearTimeout(timer);
+  }, [printOrder]);
 
   const updateData = (nextRequests: PurchaseRequest[], nextOrders: PurchaseOrder[]) => {
     try {
@@ -150,6 +196,18 @@ export default function PurchasingPage({ role, user }: { role: RoleName; user: s
       </div>
       {message && <Alert severity="success">{message}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
+      {canQuote && (
+        <Paper component="form" onSubmit={addSupplier} sx={{ p: 2 }}>
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" } }}>
+            <Typography variant="subtitle1" sx={{ fontWeight: 700, flexGrow: 1 }}>Maestro de proveedores</Typography>
+            <TextField size="small" label="Nombre del proveedor" value={supplierName} onChange={(event) => setSupplierName(event.target.value)} required />
+            <Button type="submit" variant="outlined">Agregar proveedor</Button>
+          </Stack>
+          <Typography variant="caption" color="text.secondary">
+            {suppliers.length ? `${suppliers.length} proveedores disponibles para cotizaciones y facturas.` : "Agrega proveedores aquí antes de registrar cotizaciones."}
+          </Typography>
+        </Paper>
+      )}
       <Paper sx={{ p: 3 }}>
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 2 }}>
           <ShoppingCart color="primary" />
@@ -193,11 +251,13 @@ export default function PurchasingPage({ role, user }: { role: RoleName; user: s
                       <Stack spacing={1}>
                         {quoteDrafts.map((quote, index) => (
                           <Stack key={index} direction={{ xs: "column", md: "row" }} spacing={1}>
-                            <TextField size="small" label={`Proveedor ${index + 1}`} value={quote.supplier} onChange={(event) => setDrafts((current) => {
+                            <TextField select size="small" label={`Proveedor ${index + 1}`} value={quote.supplier} onChange={(event) => setDrafts((current) => {
                               const next = [...(current[request.id] ?? quoteDrafts)];
                               next[index] = { ...next[index], supplier: event.target.value };
                               return { ...current, [request.id]: next };
-                            })} />
+                            })}>
+                              {suppliers.map((supplier) => <MenuItem key={supplier.id} value={supplier.name}>{supplier.name}</MenuItem>)}
+                            </TextField>
                             <TextField size="small" label="Precio unit. CLP" type="number" value={quote.unitCost} onChange={(event) => setDrafts((current) => {
                               const next = [...(current[request.id] ?? quoteDrafts)];
                               next[index] = { ...next[index], unitCost: event.target.value };
@@ -239,7 +299,7 @@ export default function PurchasingPage({ role, user }: { role: RoleName; user: s
         <Typography variant="h6" sx={{ mb: 2 }}>Órdenes de compra</Typography>
         {orders.length === 0 ? <Typography color="text.secondary">Las OC cotizadas aparecerán aquí.</Typography> : (
           <Table size="small">
-            <TableHead><TableRow><TableCell>OC</TableCell><TableCell>Solicitud</TableCell><TableCell>Proveedor</TableCell><TableCell>Material</TableCell><TableCell align="right">Total</TableCell><TableCell>Entrega</TableCell><TableCell>Estado / aprobación</TableCell></TableRow></TableHead>
+            <TableHead><TableRow><TableCell>OC</TableCell><TableCell>Solicitud</TableCell><TableCell>Proveedor</TableCell><TableCell>Material</TableCell><TableCell align="right">Total</TableCell><TableCell>Entrega</TableCell><TableCell>Estado / aprobación</TableCell><TableCell>Documento</TableCell></TableRow></TableHead>
             <TableBody>{orders.map((order) => (
               <TableRow key={order.id}>
                 <TableCell>{order.id}</TableCell><TableCell>{order.requestId}</TableCell><TableCell>{order.supplier}</TableCell>
@@ -247,11 +307,68 @@ export default function PurchasingPage({ role, user }: { role: RoleName; user: s
                 <TableCell align="right">{money(order.quantity * order.unitCost)}</TableCell>
                 <TableCell>{order.expectedDate}</TableCell>
                 <TableCell>{order.status}{order.approvedBy ? ` · ${order.approvedBy}` : ""}</TableCell>
+                <TableCell><Button size="small" startIcon={<Print />} onClick={() => setPrintOrder(order)}>Imprimir</Button></TableCell>
               </TableRow>
             ))}</TableBody>
           </Table>
         )}
       </Paper>
+      {printOrder && <PurchaseOrderPrint order={printOrder} />}
     </Stack>
+  );
+}
+
+function PurchaseOrderPrint({ order }: { order: PurchaseOrder }) {
+  const total = order.quantity * order.unitCost;
+  return (
+    <Box className="document-print-area">
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "2px solid #166534", paddingBottom: 16 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <img
+            src="/PMO.jfif"
+            alt=""
+            onError={(event) => { event.currentTarget.style.display = "none"; }}
+            style={{ maxWidth: 64, maxHeight: 54, objectFit: "contain" }}
+          />
+          <strong style={{ fontSize: 20, letterSpacing: 1 }}>PMOPTIMIZER</strong>
+        </div>
+        <div style={{ textAlign: "right" }}>
+          <div style={{ color: "#166534", fontSize: 12, fontWeight: 700, letterSpacing: 1 }}>ORDEN DE COMPRA</div>
+          <div style={{ fontSize: 22, fontWeight: 700 }}>{order.id}</div>
+        </div>
+      </header>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, margin: "28px 0" }}>
+        <div><small style={{ color: "#64748b" }}>PROVEEDOR</small><div style={{ fontSize: 16, fontWeight: 600 }}>{order.supplier}</div></div>
+        <div><small style={{ color: "#64748b" }}>FECHA DE EMISIÓN</small><div>{new Date().toLocaleDateString("es-CL")}</div></div>
+        <div><small style={{ color: "#64748b" }}>SOLICITUD DE PEDIDO</small><div>{order.requestId}</div></div>
+        <div><small style={{ color: "#64748b" }}>FECHA DE ENTREGA ESTIMADA</small><div>{order.expectedDate}</div></div>
+      </div>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead><tr style={{ background: "#f1f5f9", textAlign: "left" }}>
+          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1" }}>Código</th>
+          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1" }}>Descripción</th>
+          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1", textAlign: "right" }}>Cantidad</th>
+          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1" }}>Unidad</th>
+          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1", textAlign: "right" }}>Precio unitario</th>
+          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1", textAlign: "right" }}>Total</th>
+        </tr></thead>
+        <tbody><tr>
+          <td style={{ padding: 10, borderBottom: "1px solid #e2e8f0" }}>{order.materialCode}</td>
+          <td style={{ padding: 10, borderBottom: "1px solid #e2e8f0" }}>{order.materialName}</td>
+          <td style={{ padding: 10, borderBottom: "1px solid #e2e8f0", textAlign: "right" }}>{order.quantity}</td>
+          <td style={{ padding: 10, borderBottom: "1px solid #e2e8f0" }}>{order.unit}</td>
+          <td style={{ padding: 10, borderBottom: "1px solid #e2e8f0", textAlign: "right" }}>{money(order.unitCost)}</td>
+          <td style={{ padding: 10, borderBottom: "1px solid #e2e8f0", textAlign: "right" }}>{money(total)}</td>
+        </tr></tbody>
+      </table>
+      <div style={{ marginTop: 18, textAlign: "right", fontSize: 18, fontWeight: 700 }}>Total: {money(total)}</div>
+      <div style={{ marginTop: 52, borderTop: "1px solid #cbd5e1", paddingTop: 14, color: "#475569", fontSize: 11 }}>
+        Estado: {order.status}{order.approvedBy ? ` · Aprobada por ${order.approvedBy}` : ""}. Documento interno de prueba; no constituye un documento tributario.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 80, marginTop: 72, textAlign: "center", fontSize: 11 }}>
+        <div style={{ borderTop: "1px solid #64748b", paddingTop: 8 }}>Solicitado por</div>
+        <div style={{ borderTop: "1px solid #64748b", paddingTop: 8 }}>Aprobación</div>
+      </div>
+    </Box>
   );
 }
