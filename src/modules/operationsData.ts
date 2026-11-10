@@ -4,7 +4,7 @@ import { keys } from "../data/keys";
 import { demoContract } from "../data/contracts";
 import type { Contract } from "../data/contracts";
 import type { StockBin } from "../data/stock";
-import { readJson, updateJson } from "../data/storage";
+import { readJson, STORE_EVENT, updateJson } from "../data/storage";
 import { entryDurationHours, readTimeEntries } from "../data/workOrders";
 import type { OrderLine, OrderType, TimeEntry, WorkOrder as BaseWorkOrder } from "../data/workOrders";
 import type { RouteTemplate } from "./maintenanceData";
@@ -162,6 +162,44 @@ export function writeMovements(fn: (movements: StockMovement[]) => StockMovement
 
 export function writePurchaseOrders(fn: (orders: PurchaseOrder[]) => PurchaseOrder[]): boolean {
   return updateJson<PurchaseOrder[]>(purchaseOrdersStorageKey, [], fn) !== null;
+}
+
+// Ejecuta escrituras en orden; si una falla, restaura el contenido previo de las claves y devuelve false.
+export function runAtomic(storageKeys: string[], steps: Array<() => boolean>): boolean {
+  const snapshot = storageKeys.map((key) => [key, localStorage.getItem(key)] as const);
+  for (const step of steps) {
+    if (step()) continue;
+    for (const [key, raw] of snapshot) {
+      try {
+        if (raw === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, raw);
+      } catch (error) {
+        console.warn(`No se pudo revertir "${key}".`, error);
+      }
+      window.dispatchEvent(new CustomEvent(STORE_EVENT, { detail: key }));
+    }
+    return false;
+  }
+  return true;
+}
+
+// Recepción de OC: stock primero (materializa la línea de tránsito con el saldo correcto), luego kardex y OC; todo o nada.
+export function receivePurchaseLine(source: StockBin, quantity: number, newBin: StockBin, movement: StockMovement): boolean {
+  return runAtomic([keys.warehouseBins, keys.warehouseMovements, purchaseOrdersStorageKey], [
+    () => writeStock((current) => current
+      .map((bin) => bin.id === source.id ? { ...bin, quantity: bin.quantity - quantity } : bin)
+      .concat(newBin)),
+    () => writeMovements((current) => [movement, ...current]),
+    () => writePurchaseOrders((storedOrders) => storedOrders.map((order) => {
+      if (order.id !== source.reference || order.status !== "Aprobada") return order;
+      const receivedQuantity = (order.receivedQuantity ?? 0) + quantity;
+      return {
+        ...order,
+        receivedQuantity,
+        status: receivedQuantity >= order.quantity ? "Recepcionada" as const : "Aprobada" as const,
+      };
+    })),
+  ]);
 }
 
 export function materialsForRoute(route: RouteTemplate): OrderLine[] {

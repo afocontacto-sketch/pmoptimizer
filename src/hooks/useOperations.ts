@@ -16,6 +16,7 @@ import {
   writeStock,
 } from "../modules/operationsData";
 import type { StockMovement, TimedOrder, WorkOrder } from "../modules/operationsData";
+import { purchaseOrdersStorageKey } from "../modules/supplyData";
 import { useStoredValue } from "./useStore";
 
 const readOrdersNow = () => readOrders(getEmployeeHourlyRate);
@@ -40,7 +41,7 @@ export function readTechnicianProfiles() {
 // Estado compartido de OT, stock y kardex: se lee de localStorage y se escribe con updateJson (sin useEffect de persistencia).
 export function useOperations() {
   const orders = useStoredValue<WorkOrder[]>(keys.workOrders, readOrdersNow);
-  const stock = useStoredValue<StockBin[]>(keys.warehouseBins, readStock);
+  const stock = useStoredValue<StockBin[]>(keys.warehouseBins, readStock, [purchaseOrdersStorageKey]);
   const movements = useStoredValue<StockMovement[]>(keys.warehouseMovements, readMovements);
   const [elapsedNow, setElapsedNow] = useState(Date.now());
   const timerRunning = orders.some((order) => order.timerStartedAt !== null);
@@ -58,16 +59,14 @@ export function useOperations() {
     ),
   })), [orders, elapsedNow]);
 
-  const setOrders = useCallback((fn: (current: WorkOrder[]) => WorkOrder[]) => {
-    writeOrders(getEmployeeHourlyRate, fn);
-  }, []);
-  const updateOrder = useCallback((orderId: string, update: (order: WorkOrder) => WorkOrder) => {
-    setOrders((current) => current.map((order) => order.id === orderId ? update(order) : order));
-  }, [setOrders]);
-  const setStock = useCallback((fn: (current: StockBin[]) => StockBin[]) => { writeStock(fn); }, []);
-  const recordMovement = useCallback((movement: StockMovement) => {
-    writeMovements((current) => [movement, ...current]);
-  }, []);
+  // Todas devuelven false si el guardado falló, para que quien orquesta varias escrituras pueda revertir.
+  const setOrders = useCallback((fn: (current: WorkOrder[]) => WorkOrder[]): boolean =>
+    writeOrders(getEmployeeHourlyRate, fn), []);
+  const updateOrder = useCallback((orderId: string, update: (order: WorkOrder) => WorkOrder): boolean =>
+    setOrders((current) => current.map((order) => order.id === orderId ? update(order) : order)), [setOrders]);
+  const setStock = useCallback((fn: (current: StockBin[]) => StockBin[]): boolean => writeStock(fn), []);
+  const recordMovement = useCallback((movement: StockMovement): boolean =>
+    writeMovements((current) => [movement, ...current]), []);
 
   return { orders, visibleOrders, stock, movements, setOrders, updateOrder, setStock, recordMovement };
 }

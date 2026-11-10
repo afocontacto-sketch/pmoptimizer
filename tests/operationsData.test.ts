@@ -9,6 +9,7 @@ import {
   isPickableLocation,
   readOrders,
   readStock,
+  receivePurchaseLine,
   releaseQualityLot,
   wbsTotals,
   writeOrders,
@@ -158,5 +159,38 @@ describe("recepción de OC", () => {
     expect(ok).toBe(true);
     expect(JSON.parse(store.get(keys.purchaseOrders) ?? "[]")[0]).toMatchObject({ receivedQuantity: 5, status: "Recepcionada" });
     expect(events).toEqual([keys.purchaseOrders]);
+  });
+
+  const approvedOrder = {
+    id: "31000002", status: "Aprobada", quantity: 10, receivedQuantity: 0,
+    materialCode: "MAT-114", materialName: "Cinta", unit: "rollo", unitCost: 100,
+  };
+  const receive = (quantity: number) => {
+    const source = readStock().find((bin) => bin.status === "En tránsito" && bin.reference === "31000002")!;
+    const newBin: StockBin = { ...source, id: "BIN-REC-1", warehouse: "Bodega Central", location: "REC-CALIDAD", status: "Bloqueado calidad", quantity, reserved: 0 };
+    const movement = { id: "MOV-1", date: "", type: "Recepción OC" as const, code: "MAT-114", quantity, from: "", to: "", reference: "31000002", user: "t" };
+    return receivePurchaseLine(source, quantity, newBin, movement);
+  };
+
+  test("OC creada tras el seed: recibir 4 de 10 deja pendiente 6 (sin doble descuento)", () => {
+    store.set(keys.purchaseOrders, JSON.stringify([approvedOrder]));
+    expect(receive(4)).toBe(true);
+    const transit = readStock().find((bin) => bin.status === "En tránsito" && bin.reference === "31000002");
+    expect(transit?.quantity).toBe(6);
+    expect(JSON.parse(store.get(keys.purchaseOrders) ?? "[]")[0]).toMatchObject({ receivedQuantity: 4, status: "Aprobada" });
+  });
+
+  test("si falla una escritura se revierte todo lo ya escrito", () => {
+    store.set(keys.purchaseOrders, JSON.stringify([approvedOrder]));
+    const original = localStorage.setItem;
+    localStorage.setItem = (key: string, value: string) => {
+      if (key === keys.purchaseOrders) throw new DOMException("full", "QuotaExceededError");
+      original(key, value);
+    };
+    expect(receive(4)).toBe(false);
+    localStorage.setItem = original;
+    expect(store.has(keys.warehouseBins)).toBe(false);
+    expect(store.has(keys.warehouseMovements)).toBe(false);
+    expect(readStock().find((bin) => bin.reference === "31000002")?.quantity).toBe(10);
   });
 });

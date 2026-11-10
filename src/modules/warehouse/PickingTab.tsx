@@ -23,7 +23,11 @@ import { downloadCsv as downloadCsvRows, downloadTemplate } from "../../data/csv
 import { money } from "../../data/format";
 import { useOperations } from "../../hooks/useOperations";
 import type { Feedback } from "../../hooks/useOperations";
-import { isPickableLocation, makeMovement } from "../operationsData";
+import { keys } from "../../data/keys";
+import { isPickableLocation, makeMovement, runAtomic } from "../operationsData";
+
+const pickingKeys = [keys.warehouseBins, keys.warehouseMovements, keys.workOrders];
+const saveFailed = "No se pudo guardar el cambio (almacenamiento lleno); no se aplicó ninguna modificación.";
 import type { WorkOrder } from "../operationsData";
 
 type Props = {
@@ -132,26 +136,33 @@ export default function PickingTab({ user, role, setMessage, setError, importWar
       setMessage("");
       return;
     }
-    setStock((current) => current.map((bin) => {
-      const reserved = picks.filter((pick) => pick.bin.id === bin.id).reduce((sum, pick) => sum + pick.quantity, 0);
-      return reserved ? { ...bin, reserved: bin.reserved + reserved } : bin;
-    }));
-    picks.forEach((pick) => recordMovement(makeMovement(
-      "Reserva picking",
-      pick.bin.code,
-      pick.quantity,
-      `${pick.bin.warehouse}/${pick.bin.location}`,
-      order.id,
-      order.id,
-      user,
-    )));
-    updateOrder(order.id, (current) => ({
-      ...current,
-      reservedPicks: [
-        ...(current.reservedPicks ?? []),
-        ...picks.map((pick) => ({ binId: pick.bin.id, code: pick.bin.code, quantity: pick.quantity })),
-      ],
-    }));
+    const saved = runAtomic(pickingKeys, [
+      () => setStock((current) => current.map((bin) => {
+        const reserved = picks.filter((pick) => pick.bin.id === bin.id).reduce((sum, pick) => sum + pick.quantity, 0);
+        return reserved ? { ...bin, reserved: bin.reserved + reserved } : bin;
+      })),
+      ...picks.map((pick) => () => recordMovement(makeMovement(
+        "Reserva picking",
+        pick.bin.code,
+        pick.quantity,
+        `${pick.bin.warehouse}/${pick.bin.location}`,
+        order.id,
+        order.id,
+        user,
+      ))),
+      () => updateOrder(order.id, (current) => ({
+        ...current,
+        reservedPicks: [
+          ...(current.reservedPicks ?? []),
+          ...picks.map((pick) => ({ binId: pick.bin.id, code: pick.bin.code, quantity: pick.quantity })),
+        ],
+      })),
+    ]);
+    if (!saved) {
+      setMessage("");
+      setError(saveFailed);
+      return;
+    }
     setMessage(`Picking reservado para ${order.id} siguiendo ubicación ascendente.`);
     setError("");
   };
@@ -193,22 +204,24 @@ export default function PickingTab({ user, role, setMessage, setError, importWar
       remainingToConsume.set(pick.bin.code, Math.max(0, (remainingToConsume.get(pick.bin.code) ?? 0) - quantity));
       return { ...pick, consumed: quantity };
     });
-    setStock((current) => current.map((bin) => {
-      const reserved = picks.filter((pick) => pick.bin.id === bin.id).reduce((sum, pick) => sum + pick.quantity, 0);
-      const consumed = consumedPicks.filter((pick) => pick.bin.id === bin.id).reduce((sum, pick) => sum + pick.consumed, 0);
-      return reserved ? { ...bin, quantity: bin.quantity - consumed, reserved: Math.max(0, bin.reserved - reserved) } : bin;
-    }));
-    consumedPicks.forEach((pick) => {
-      if (pick.consumed > 0) recordMovement(makeMovement(
+    const movementSteps = consumedPicks.flatMap((pick) => [
+      ...(pick.consumed > 0 ? [() => recordMovement(makeMovement(
         "Consumo OT", pick.bin.code, pick.consumed,
         `${pick.bin.warehouse}/${pick.bin.location}`, order.id, `${order.id} · ${order.wbs}`, user,
-      ));
-      if (pick.quantity > pick.consumed) recordMovement(makeMovement(
+      ))] : []),
+      ...(pick.quantity > pick.consumed ? [() => recordMovement(makeMovement(
         "Liberación picking", pick.bin.code, pick.quantity - pick.consumed,
         order.id, `${pick.bin.warehouse}/${pick.bin.location}`, order.id, user,
-      ));
-    });
-    updateOrder(order.id, (current) => {
+      ))] : []),
+    ]);
+    const saved = runAtomic(pickingKeys, [
+      () => setStock((current) => current.map((bin) => {
+        const reserved = picks.filter((pick) => pick.bin.id === bin.id).reduce((sum, pick) => sum + pick.quantity, 0);
+        const consumed = consumedPicks.filter((pick) => pick.bin.id === bin.id).reduce((sum, pick) => sum + pick.consumed, 0);
+        return reserved ? { ...bin, quantity: bin.quantity - consumed, reserved: Math.max(0, bin.reserved - reserved) } : bin;
+      })),
+      ...movementSteps,
+      () => updateOrder(order.id, (current) => {
       const additions = remaining.map((item) => {
         const materialPicks = consumedPicks.filter((pick) => pick.bin.code === item.code && pick.consumed > 0);
         const pickedQuantity = materialPicks.reduce((sum, pick) => sum + pick.consumed, 0);
@@ -226,8 +239,14 @@ export default function PickingTab({ user, role, setMessage, setError, importWar
         return { ...line, picked, unitCostAvg };
       });
       const pickingStatus = materials.every((line) => line.picked >= line.required) ? "Picking completo" : "Picking parcial";
-      return { ...current, materials, pickingStatus, reservedPicks: [] };
-    });
+        return { ...current, materials, pickingStatus, reservedPicks: [] };
+      }),
+    ]);
+    if (!saved) {
+      setMessage("");
+      setError(saveFailed);
+      return;
+    }
     setPickingTaken((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${order.id}:`))));
     setMessage(`Cantidades tomadas registradas en ${order.id}; el excedente reservado se liberó y el consumo se cargará al costo de la OT/WBS.`);
     setError("");
@@ -240,25 +259,32 @@ export default function PickingTab({ user, role, setMessage, setError, importWar
     }
     const reservations = order.reservedPicks ?? [];
     if (!reservations.length) return;
-    setStock((current) => current.map((bin) => {
-      const reserved = reservations
-        .filter((pick) => pick.binId === bin.id)
-        .reduce((sum, pick) => sum + pick.quantity, 0);
-      return reserved ? { ...bin, reserved: Math.max(0, bin.reserved - reserved) } : bin;
-    }));
-    reservations.forEach((pick) => {
-      const bin = stock.find((item) => item.id === pick.binId);
-      recordMovement(makeMovement(
-        "Liberación picking",
-        pick.code,
-        pick.quantity,
-        order.id,
-        bin ? `${bin.warehouse}/${bin.location}` : "Stock",
-        order.id,
-        user,
-      ));
-    });
-    updateOrder(order.id, (current) => ({ ...current, reservedPicks: [] }));
+    const saved = runAtomic(pickingKeys, [
+      () => setStock((current) => current.map((bin) => {
+        const reserved = reservations
+          .filter((pick) => pick.binId === bin.id)
+          .reduce((sum, pick) => sum + pick.quantity, 0);
+        return reserved ? { ...bin, reserved: Math.max(0, bin.reserved - reserved) } : bin;
+      })),
+      ...reservations.map((pick) => () => {
+        const bin = stock.find((item) => item.id === pick.binId);
+        return recordMovement(makeMovement(
+          "Liberación picking",
+          pick.code,
+          pick.quantity,
+          order.id,
+          bin ? `${bin.warehouse}/${bin.location}` : "Stock",
+          order.id,
+          user,
+        ));
+      }),
+      () => updateOrder(order.id, (current) => ({ ...current, reservedPicks: [] })),
+    ]);
+    if (!saved) {
+      setMessage("");
+      setError(saveFailed);
+      return;
+    }
     setMessage(`Reservas de ${order.id} liberadas; el stock vuelve a estar disponible.`);
     setError("");
   };

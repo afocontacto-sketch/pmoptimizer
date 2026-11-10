@@ -22,7 +22,7 @@ import { money } from "../../data/format";
 import type { StockBin } from "../../data/stock";
 import { useOperations } from "../../hooks/useOperations";
 import type { Feedback } from "../../hooks/useOperations";
-import { aggregateStockBins, isPickableLocation, makeMovement, releaseQualityLot, writePurchaseOrders } from "../operationsData";
+import { aggregateStockBins, isPickableLocation, makeMovement, receivePurchaseLine, releaseQualityLot } from "../operationsData";
 import type { StockBinGroup } from "../operationsData";
 
 export default function ReceivingTab({ user, role, setMessage, setError }: { user: string; role: Role } & Feedback) {
@@ -64,19 +64,6 @@ export default function ReceivingTab({ user, role, setMessage, setError }: { use
       setError(`La recepción supera lo pendiente en ${receipt.purchaseOrder} (${source.quantity} ${source.unit}).`);
       return;
     }
-    const updated = writePurchaseOrders((storedOrders) => storedOrders.map((order) => {
-      if (order.id !== source.reference || order.status !== "Aprobada") return order;
-      const receivedQuantity = (order.receivedQuantity ?? 0) + quantity;
-      return {
-        ...order,
-        receivedQuantity,
-        status: receivedQuantity >= order.quantity ? "Recepcionada" as const : "Aprobada" as const,
-      };
-    }));
-    if (!updated) {
-      setError("No se pudo actualizar la OC; no se registró la recepción.");
-      return;
-    }
     const newBin: StockBin = {
       ...source,
       id: `BIN-REC-${Date.now()}`,
@@ -86,10 +73,7 @@ export default function ReceivingTab({ user, role, setMessage, setError }: { use
       quantity,
       reserved: 0,
     };
-    setStock((current) => current
-      .map((bin) => bin.id === source.id ? { ...bin, quantity: bin.quantity - quantity } : bin)
-      .concat(newBin));
-    recordMovement(makeMovement(
+    const saved = receivePurchaseLine(source, quantity, newBin, makeMovement(
       "Recepción OC",
       source.code,
       quantity,
@@ -98,6 +82,11 @@ export default function ReceivingTab({ user, role, setMessage, setError }: { use
       source.reference ?? receipt.purchaseOrder,
       user,
     ));
+    if (!saved) {
+      setMessage("");
+      setError("No se pudo guardar la recepción (almacenamiento lleno); no se aplicó ningún cambio.");
+      return;
+    }
     setError("");
     setMessage(`Recepción de ${source.reference ?? receipt.purchaseOrder} registrada: ${quantity} ${source.unit} de ${source.name}. Pendiente: ${source.quantity - quantity}. ${receipt.qualityHold ? "Quedó bloqueada para inspección de Calidad." : "Quedó en zona de recepción hasta asignar ubicación."}`);
   };
