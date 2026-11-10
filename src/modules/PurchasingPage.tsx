@@ -5,6 +5,10 @@ import {
   Box,
   Button,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   MenuItem,
   Paper,
   Stack,
@@ -16,15 +20,16 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { CheckCircleOutlined, Print, ShoppingCart } from "@mui/icons-material";
+import { CheckCircleOutlined, Print, ShoppingCart, CompareArrows } from "@mui/icons-material";
 import {
   makeSupplyId,
   purchaseOrdersStorageKey,
   purchaseRequestsStorageKey,
   readStoredList,
   suppliersStorageKey,
+  quotationsStorageKey,
 } from "./supplyData";
-import type { PurchaseOrder, PurchaseQuote, PurchaseRequest, SupplierMaster } from "./supplyData";
+import type { PurchaseOrder, PurchaseQuote, PurchaseRequest, SupplierMaster, AwardHistory } from "./supplyData";
 
 type RoleName = "Administrador" | "Supervisor" | "Planificador" | "PM Proyecto" | "Compras" | "Contabilidad" | "Producción" | "Industrial" | "Ingeniería" | "Calidad";
 type QuoteDraft = { supplier: string; unitCost: string; expectedDate: string };
@@ -51,10 +56,13 @@ export default function PurchasingPage({ role, user }: { role: RoleName; user: s
       name,
     });
   });
+  const [awardHistory, setAwardHistory] = useState<AwardHistory[]>(() =>
+    readStoredList<AwardHistory>(quotationsStorageKey));
   const [supplierName, setSupplierName] = useState("");
   const [drafts, setDrafts] = useState<Record<string, QuoteDraft[]>>({});
   const [selectedQuotes, setSelectedQuotes] = useState<Record<string, string>>({});
   const [printOrder, setPrintOrder] = useState<PurchaseOrder | null>(null);
+  const [comparatorModal, setComparatorModal] = useState<PurchaseRequest | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const canApprove = role === "Administrador" || role === "PM Proyecto";
@@ -89,10 +97,14 @@ export default function PurchasingPage({ role, user }: { role: RoleName; user: s
     return () => window.clearTimeout(timer);
   }, [printOrder]);
 
-  const updateData = (nextRequests: PurchaseRequest[], nextOrders: PurchaseOrder[]) => {
+  const updateData = (nextRequests: PurchaseRequest[], nextOrders: PurchaseOrder[], nextAwardHistory?: AwardHistory[]) => {
     try {
       localStorage.setItem(purchaseOrdersStorageKey, JSON.stringify(nextOrders));
       localStorage.setItem(purchaseRequestsStorageKey, JSON.stringify(nextRequests));
+      if (nextAwardHistory) {
+        localStorage.setItem(quotationsStorageKey, JSON.stringify(nextAwardHistory));
+        setAwardHistory(nextAwardHistory);
+      }
       setOrders(nextOrders);
       setRequests(nextRequests);
       setError("");
@@ -104,16 +116,14 @@ export default function PurchasingPage({ role, user }: { role: RoleName; user: s
     }
   };
 
-  const createOrder = (request: PurchaseRequest) => {
-    const cheapestQuoteId = request.quotes?.length
-      ? request.quotes.reduce((cheapest, item) => item.unitCost < cheapest.unitCost ? item : cheapest).id
-      : undefined;
-    const quote = request.quotes?.find((item) => item.id === (selectedQuotes[request.id] ?? cheapestQuoteId));
+  const awardQuote = (request: PurchaseRequest, quote: PurchaseQuote) => {
     if (!quote) {
-      setError(`Selecciona una de las tres ofertas comparadas para ${request.id}.`);
+      setError(`Selecciona una cotización para ${request.id}.`);
       return;
     }
+
     const orderId = makeSupplyId("OC");
+    const today = new Date().toISOString().split("T")[0];
     const order: PurchaseOrder = {
       id: orderId,
       requestId: request.id,
@@ -125,21 +135,48 @@ export default function PurchasingPage({ role, user }: { role: RoleName; user: s
       unitCost: quote.unitCost,
       expectedDate: quote.expectedDate,
       selectedQuoteId: quote.id,
+      winningQuoteId: quote.id,
       status: "Pendiente aprobación",
     };
+
     const nextOrders = [...orders, order];
-    const nextRequests = requests.map((item) => item.id === request.id
-      ? {
-        ...item,
-        supplier: order.supplier,
-        quotedUnitCost: quote.unitCost,
-        purchaseOrderId: orderId,
-        expectedDate: quote.expectedDate,
-        status: "OC pendiente aprobación" as const,
+    const nextRequests = requests.map((item) => {
+      if (item.id === request.id) {
+        return {
+          ...item,
+          supplier: order.supplier,
+          quotedUnitCost: quote.unitCost,
+          purchaseOrderId: orderId,
+          expectedDate: quote.expectedDate,
+          status: "OC pendiente aprobación" as const,
+          quotes: item.quotes?.map((q) => ({
+            ...q,
+            status: q.id === quote.id ? "Ganadora" as const : "Rechazada" as const,
+            awardedDate: q.id === quote.id ? today : undefined,
+          })),
+        };
       }
-      : item);
-    if (updateData(nextRequests, nextOrders)) {
-      setMessage(`${orderId} creada y enviada al PM del proyecto para aprobación.`);
+      return item;
+    });
+
+    const nextAwardHistory: AwardHistory[] = [...awardHistory, {
+      id: makeSupplyId("ADJ"),
+      requestId: request.id,
+      materialCode: request.materialCode,
+      materialName: request.materialName,
+      quantity: request.quantity,
+      unit: request.unit,
+      winningQuoteId: quote.id,
+      supplier: quote.supplier,
+      unitCost: quote.unitCost,
+      awardedDate: today,
+      expectedDate: quote.expectedDate,
+      purchaseOrderId: orderId,
+    }];
+
+    if (updateData(nextRequests, nextOrders, nextAwardHistory)) {
+      setComparatorModal(null);
+      setMessage(`${orderId} creada. Cotización adjudicada a ${quote.supplier} · ${money(quote.unitCost)} c/u.`);
     }
   };
 
@@ -285,8 +322,10 @@ export default function PurchasingPage({ role, user }: { role: RoleName; user: s
                       <Button size="small" onClick={() => startQuote(request)}>Registrar 3 cotizaciones</Button>
                     ) : canQuote && request.status === "Cotización en curso" && request.quotes?.length !== 3 ? (
                       <Button size="small" variant="contained" onClick={() => saveQuotes(request)}>Guardar comparativo</Button>
-                    ) : canQuote && request.status === "Cotización en curso" ? (
-                      <Button size="small" variant="contained" onClick={() => createOrder(request)}>Adjudicar y crear OC</Button>
+                    ) : canQuote && request.status === "Cotización en curso" && request.quotes?.length === 3 ? (
+                      <Stack direction="row" spacing={1}>
+                        <Button size="small" startIcon={<CompareArrows />} onClick={() => setComparatorModal(request)}>Ver comparativo</Button>
+                      </Stack>
                     ) : null}
                   </TableCell>
                 </TableRow>
@@ -314,6 +353,7 @@ export default function PurchasingPage({ role, user }: { role: RoleName; user: s
         )}
       </Paper>
       {printOrder && <PurchaseOrderPrint order={printOrder} />}
+      {comparatorModal && <QuotationComparator request={comparatorModal} onClose={() => setComparatorModal(null)} onAward={awardQuote} awardHistory={awardHistory} />}
     </Stack>
   );
 }
@@ -370,5 +410,177 @@ function PurchaseOrderPrint({ order }: { order: PurchaseOrder }) {
         <div style={{ borderTop: "1px solid #64748b", paddingTop: 8 }}>Aprobación</div>
       </div>
     </Box>
+  );
+}
+
+function QuotationComparator({
+  request,
+  onClose,
+  onAward,
+  awardHistory,
+}: {
+  request: PurchaseRequest;
+  onClose: () => void;
+  onAward: (request: PurchaseRequest, quote: PurchaseQuote) => void;
+  awardHistory: AwardHistory[];
+}) {
+  const quotes = request.quotes ?? [];
+  const hasAwardedQuote = quotes.some((q) => q.status === "Ganadora");
+
+  const calculateTotal = (quote: PurchaseQuote): number => {
+    return request.quantity * quote.unitCost;
+  };
+
+  const findAwardRecord = (quoteId: string): AwardHistory | undefined => {
+    return awardHistory.find((record) => record.winningQuoteId === quoteId);
+  };
+
+  return (
+    <Dialog open={true} onClose={onClose} maxWidth="md" fullWidth>
+      <DialogTitle>
+        <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+          <CompareArrows color="primary" />
+          <Typography variant="h6">Comparador de Cotizaciones</Typography>
+        </Stack>
+        <Typography variant="caption" color="text.secondary">
+          {request.id} · {request.materialCode} ({request.materialName}) · {request.quantity} {request.unit}
+        </Typography>
+      </DialogTitle>
+      <DialogContent>
+        <Stack spacing={2} sx={{ pt: 2 }}>
+          {hasAwardedQuote && (
+            <Alert severity="info">
+              Cotización adjudicada. Las órdenes de compra relacionadas están en revisión de aprobación.
+            </Alert>
+          )}
+          <Table size="small" sx={{ border: "1px solid #e0e0e0" }}>
+            <TableHead>
+              <TableRow sx={{ backgroundColor: "#f5f5f5" }}>
+                <TableCell sx={{ fontWeight: 700 }}>Proveedor</TableCell>
+                <TableCell align="right" sx={{ fontWeight: 700 }}>Precio unitario</TableCell>
+                <TableCell align="right" sx={{ fontWeight: 700 }}>Total</TableCell>
+                <TableCell sx={{ fontWeight: 700 }}>Plazo de entrega</TableCell>
+                <TableCell sx={{ fontWeight: 700 }}>Estado</TableCell>
+                <TableCell align="center" sx={{ fontWeight: 700 }}>Acción</TableCell>
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {quotes.map((quote) => {
+                const total = calculateTotal(quote);
+                const status = quote.status ?? "Pendiente";
+                const awardRecord = findAwardRecord(quote.id);
+                return (
+                  <TableRow key={quote.id} sx={{ backgroundColor: status === "Ganadora" ? "#e8f5e9" : status === "Rechazada" ? "#ffebee" : "inherit" }}>
+                    <TableCell>
+                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                        {quote.supplier}
+                      </Typography>
+                      {awardRecord && (
+                        <Typography variant="caption" color="text.secondary">
+                          Adjudicada: {awardRecord.awardedDate}
+                        </Typography>
+                      )}
+                    </TableCell>
+                    <TableCell align="right">
+                      {money(quote.unitCost)}
+                    </TableCell>
+                    <TableCell align="right" sx={{ fontWeight: 600 }}>
+                      {money(total)}
+                    </TableCell>
+                    <TableCell>
+                      {quote.expectedDate}
+                    </TableCell>
+                    <TableCell>
+                      <Chip
+                        size="small"
+                        label={status}
+                        color={status === "Ganadora" ? "success" : status === "Rechazada" ? "error" : "warning"}
+                        variant={status === "Pendiente" ? "outlined" : "filled"}
+                      />
+                    </TableCell>
+                    <TableCell align="center">
+                      {status === "Pendiente" ? (
+                        <Button
+                          size="small"
+                          variant="contained"
+                          color="success"
+                          onClick={() => onAward(request, quote)}
+                        >
+                          Adjudicar
+                        </Button>
+                      ) : (
+                        <Chip size="small" label={status === "Ganadora" ? "Ganadora" : "Rechazada"} />
+                      )}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+
+          <Paper sx={{ p: 2, backgroundColor: "#fafafa" }}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+              Análisis de precios
+            </Typography>
+            <Stack spacing={0.5}>
+              {quotes.length > 0 && (
+                <>
+                  <Typography variant="body2">
+                    Menor precio: {money(Math.min(...quotes.map((q) => q.unitCost)))} ({
+                      quotes.find((q) => q.unitCost === Math.min(...quotes.map((qm) => qm.unitCost)))?.supplier
+                    })
+                  </Typography>
+                  <Typography variant="body2">
+                    Mayor precio: {money(Math.max(...quotes.map((q) => q.unitCost)))} ({
+                      quotes.find((q) => q.unitCost === Math.max(...quotes.map((qm) => qm.unitCost)))?.supplier
+                    })
+                  </Typography>
+                  <Typography variant="body2">
+                    Promedio: {money(quotes.reduce((sum, q) => sum + q.unitCost, 0) / quotes.length)}
+                  </Typography>
+                </>
+              )}
+            </Stack>
+          </Paper>
+
+          {awardHistory.filter((h) => h.requestId === request.id).length > 0 && (
+            <Paper sx={{ p: 2, backgroundColor: "#f0f7ff" }}>
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+                Historial de adjudicaciones
+              </Typography>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell sx={{ fontSize: "0.75rem" }}>Proveedor</TableCell>
+                    <TableCell align="right" sx={{ fontSize: "0.75rem" }}>Precio</TableCell>
+                    <TableCell sx={{ fontSize: "0.75rem" }}>Fecha</TableCell>
+                    <TableCell sx={{ fontSize: "0.75rem" }}>OC</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {awardHistory
+                    .filter((h) => h.requestId === request.id)
+                    .map((h) => (
+                      <TableRow key={h.id}>
+                        <TableCell sx={{ fontSize: "0.75rem" }}>{h.supplier}</TableCell>
+                        <TableCell align="right" sx={{ fontSize: "0.75rem" }}>
+                          {money(h.unitCost)}
+                        </TableCell>
+                        <TableCell sx={{ fontSize: "0.75rem" }}>{h.awardedDate}</TableCell>
+                        <TableCell sx={{ fontSize: "0.75rem" }}>
+                          <Chip size="small" label={h.purchaseOrderId} />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                </TableBody>
+              </Table>
+            </Paper>
+          )}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>Cerrar</Button>
+      </DialogActions>
+    </Dialog>
   );
 }

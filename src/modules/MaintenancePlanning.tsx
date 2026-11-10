@@ -18,7 +18,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { Add, Download, UploadFile } from "@mui/icons-material";
+import { Add, Download, UploadFile, Clear } from "@mui/icons-material";
 import { Link } from "react-router-dom";
 import {
   maintenanceCallsStorageKey,
@@ -35,6 +35,7 @@ import type {
   TriggerType,
 } from "./maintenanceData";
 import { readEquipmentMaster } from "./masterData";
+import { GanttChart } from "../components/GanttChart";
 
 type CustomFieldDefinition = {
   key: string;
@@ -1068,6 +1069,144 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
           </Paper>
         </Grid>
       </Grid>
+
+      <Divider sx={{ my: 3 }} />
+
+      <Paper sx={{ p: 3 }}>
+        <Stack spacing={3}>
+          <Typography variant="h6">Gantt Interactivo - Planificación de Órdenes</Typography>
+
+          <Stack spacing={2}>
+            <Typography variant="subtitle2">Filtros</Typography>
+            <Grid container spacing={2}>
+              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                <TextField
+                  label="Desde"
+                  type="date"
+                  value={ganttFrom}
+                  onChange={(e) => setGanttFrom(e.target.value)}
+                  slotProps={{ inputLabel: { shrink: true } }}
+                  fullWidth
+                  size="small"
+                />
+              </Grid>
+              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                <TextField
+                  label="Hasta"
+                  type="date"
+                  value={ganttTo}
+                  onChange={(e) => setGanttTo(e.target.value)}
+                  slotProps={{ inputLabel: { shrink: true } }}
+                  fullWidth
+                  size="small"
+                />
+              </Grid>
+              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                <TextField
+                  select
+                  label="Contrato"
+                  value={ganttContract}
+                  onChange={(e) => setGanttContract(e.target.value)}
+                  fullWidth
+                  size="small"
+                >
+                  <MenuItem value="">Todos</MenuItem>
+                  {availableContracts.map((contract) => (
+                    <MenuItem key={contract} value={contract}>
+                      {contract}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              </Grid>
+              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                <TextField
+                  select
+                  label="Año"
+                  value={ganttYear}
+                  onChange={(e) => setGanttYear(e.target.value)}
+                  fullWidth
+                  size="small"
+                >
+                  <MenuItem value="">Todos</MenuItem>
+                  {availableYears.map((year) => (
+                    <MenuItem key={year} value={year}>
+                      {year}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              </Grid>
+            </Grid>
+            <Box sx={{ display: "flex", gap: 1 }}>
+              <Button
+                variant="contained"
+                onClick={() => {
+                  setGanttFrom("");
+                  setGanttTo("");
+                  setGanttContract("");
+                  setGanttYear("");
+                }}
+                startIcon={<Clear />}
+                size="small"
+              >
+                Limpiar filtros
+              </Button>
+              <Typography variant="caption" sx={{ alignSelf: "center", color: "text.secondary" }}>
+                {filteredCalls.length} órdenes mostradas
+              </Typography>
+            </Box>
+          </Stack>
+
+          <GanttChart
+            tasks={filteredCalls.map((call) => ({
+              id: call.id,
+              name: `${call.plan.equipmentId} - ${call.route.name}`,
+              startDate: call.dueDate,
+              durationHours: call.route.operations.reduce((sum, op) => sum + op.durationHours, 0),
+              contract: call.plan.contract || "Sin contrato",
+              status: workOrders.find((order) => order.plannedCallId === call.id)?.status ?? "Asignada",
+              equipment: call.plan.equipmentId,
+              technician: "Técnico asignado",
+              hours: call.route.operations.reduce((sum, op) => sum + op.durationHours, 0),
+              cost: call.route.operations.reduce(
+                (sum, op) => sum + op.durationHours * op.hourlyCost + op.materials.reduce((m, mat) => m + mat.quantity * mat.unitCost, 0),
+                0,
+              ),
+              routeName: call.route.name,
+            }))}
+            role={role}
+          />
+
+          {role === "PM Proyecto" && (
+            <Stack spacing={2}>
+              <Typography variant="subtitle2">Resumen por Contrato</Typography>
+              {pmGanttTotals.length > 0 ? (
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Contrato</TableCell>
+                      <TableCell align="right">Órdenes</TableCell>
+                      <TableCell align="right">Horas</TableCell>
+                      <TableCell align="right">Presupuesto (CLP)</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {pmAnnualTotals.map((row) => (
+                      <TableRow key={`${row.contract}-${row.year}`}>
+                        <TableCell>{row.contract} ({row.year})</TableCell>
+                        <TableCell align="right">{row.calls}</TableCell>
+                        <TableCell align="right">{row.hours.toFixed(1)}</TableCell>
+                        <TableCell align="right">{formatClp(row.cost)}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              ) : (
+                <Typography color="text.secondary">Sin datos para mostrar</Typography>
+              )}
+            </Stack>
+          )}
+        </Stack>
+      </Paper>
 
       <Paper sx={{ p: 3 }}>
         <Typography variant="h6" sx={{ mb: 2 }}>Hojas de ruta disponibles</Typography>

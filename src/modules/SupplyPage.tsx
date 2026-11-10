@@ -4,7 +4,13 @@ import {
   Autocomplete,
   Box,
   Button,
+  Checkbox,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  FormControlLabel,
   Grid,
   Paper,
   Stack,
@@ -16,12 +22,12 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
-import { Add, Inventory2 } from "@mui/icons-material";
+import { Add, Inventory2, Download, Print } from "@mui/icons-material";
 import {
   maintenanceCallsStorageKey,
   routeStorageKey,
 } from "./maintenanceData";
-import type { RouteTemplate } from "./maintenanceData";
+import type { RouteTemplate, RouteOperation } from "./maintenanceData";
 import {
   makeSupplyId,
   purchaseOrdersStorageKey,
@@ -64,6 +70,39 @@ type DemandRow = {
   shortage: number;
 };
 
+type PickingItem = {
+  code: string;
+  name: string;
+  quantity: number;
+  unit: string;
+  location: string;
+  available: number;
+  pickedQuantity?: number;
+  toQuality?: boolean;
+};
+
+type PickingSession = {
+  id: string;
+  orderId: string;
+  orderName: string;
+  materials: PickingItem[];
+  status: "En picking" | "Completado";
+  createdAt: string;
+  completedAt?: string;
+};
+
+type StockMovement = {
+  id: string;
+  date: string;
+  type: "Reserva picking" | "Liberación picking" | "Liberación de calidad" | "Consumo OT" | "Bloqueado calidad";
+  code: string;
+  quantity: number;
+  from: string;
+  to: string;
+  reference: string;
+  user: string;
+};
+
 const stockStorageKey = "pmoptimizer-warehouse-bins";
 const demoStock: StockBin[] = [
   { code: "MAT-114", name: "Cinta aislante 3M", unit: "rollo", status: "Libre utilización", quantity: 9 },
@@ -97,6 +136,14 @@ export default function SupplyPage() {
     readStoredList<PurchaseRequest>(purchaseRequestsStorageKey));
   const [selectedMaterial, setSelectedMaterial] = useState<MaterialOption | null>(null);
   const [error, setError] = useState("");
+  const [pickingSessions, setPickingSessions] = useState<PickingSession[]>(() =>
+    readStoredList<PickingSession>("pmoptimizer-warehouse-picking"));
+  const [openPickingDialog, setOpenPickingDialog] = useState(false);
+  const [currentPickingOrder, setCurrentPickingOrder] = useState<string | null>(null);
+  const [currentPickingMaterials, setCurrentPickingMaterials] = useState<PickingItem[]>([]);
+  const [stockMovements, setStockMovements] = useState<StockMovement[]>(() =>
+    readStoredList<StockMovement>("pmoptimizer-stock-movements"));
+
   const routeById = useMemo(
     () => new Map<string, RouteTemplate>(routes.map((route): [string, RouteTemplate] => [route.id, route])),
     [routes],
@@ -232,6 +279,133 @@ export default function SupplyPage() {
     }
   };
 
+  const getAvailableStock = (materialCode: string): number => {
+    return stock.reduce((total, bin) => {
+      if (bin.code !== materialCode || bin.status !== "Libre utilización") return total;
+      return total + Math.max(0, (bin.quantity || 0) - (bin.reserved ?? 0));
+    }, 0);
+  };
+
+  const getMaterialLocation = (materialCode: string): string => {
+    const bin = stock.find((b) => b.code === materialCode && b.status === "Libre utilización");
+    return bin?.location || "Almacén general";
+  };
+
+  const openPickingForOrder = (orderId: string, materials: PickingItem[]) => {
+    setCurrentPickingOrder(orderId);
+    setCurrentPickingMaterials(materials);
+    setOpenPickingDialog(true);
+  };
+
+  const savePicking = () => {
+    if (!currentPickingOrder) return;
+    
+    const updatedMaterials = currentPickingMaterials.map((material) => ({
+      ...material,
+      pickedQuantity: material.pickedQuantity || 0,
+    }));
+
+    const session: PickingSession = {
+      id: makeSupplyId("PK"),
+      orderId: currentPickingOrder,
+      orderName: currentPickingMaterials.length > 0 ? currentPickingMaterials[0].name : "OT",
+      materials: updatedMaterials,
+      status: "En picking",
+      createdAt: new Date().toISOString(),
+    };
+
+    const newMovements = updatedMaterials.flatMap((material) => {
+      const movements: StockMovement[] = [];
+      if (material.pickedQuantity && material.pickedQuantity > 0) {
+        movements.push({
+          id: makeSupplyId("MOV"),
+          date: new Date().toISOString(),
+          type: "Reserva picking",
+          code: material.code,
+          quantity: material.pickedQuantity,
+          from: "Libre utilización",
+          to: "Reserva picking",
+          reference: currentPickingOrder,
+          user: "Sistema",
+        });
+      }
+      if (material.toQuality && material.pickedQuantity && material.pickedQuantity > 0) {
+        movements.push({
+          id: makeSupplyId("MOV"),
+          date: new Date().toISOString(),
+          type: "Bloqueado calidad",
+          code: material.code,
+          quantity: material.pickedQuantity,
+          from: "Reserva picking",
+          to: "Bloqueado calidad",
+          reference: currentPickingOrder,
+          user: "Sistema",
+        });
+      }
+      return movements;
+    });
+
+    const newPickingSessions = [...pickingSessions, session];
+    const newStockMovements = [...stockMovements, ...newMovements];
+
+    try {
+      localStorage.setItem("pmoptimizer-warehouse-picking", JSON.stringify(newPickingSessions));
+      localStorage.setItem("pmoptimizer-stock-movements", JSON.stringify(newStockMovements));
+      setPickingSessions(newPickingSessions);
+      setStockMovements(newStockMovements);
+      setOpenPickingDialog(false);
+      setCurrentPickingOrder(null);
+      setCurrentPickingMaterials([]);
+      setError("");
+    } catch (writeError) {
+      console.error("No se pudo guardar el picking.", writeError);
+      setError("No se pudo guardar el picking en este navegador.");
+    }
+  };
+
+  const exportPickingToCSV = (materials: PickingItem[]) => {
+    const csv = ["Código,Descripción,Cantidad requerida,Unidad,Ubicación,Stock disponible"].concat(
+      materials.map((m) => `${m.code},${m.name},${m.quantity},${m.unit},${m.location},${m.available}`),
+    ).join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `picking-${new Date().getTime()}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const printPicking = (materials: PickingItem[]) => {
+    const printWindow = window.open("", "", "width=800,height=600");
+    if (!printWindow) return;
+    const html = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Picking List</title>
+          <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; font-weight: bold; }
+            h1 { color: #333; }
+          </style>
+        </head>
+        <body>
+          <h1>Picking List</h1>
+          <table>
+            <tr><th>Código</th><th>Descripción</th><th>Cantidad</th><th>Unidad</th><th>Ubicación</th><th>Stock</th></tr>
+            ${materials.map((m) => `<tr><td>${m.code}</td><td>${m.name}</td><td>${m.quantity}</td><td>${m.unit}</td><td>${m.location}</td><td>${m.available}</td></tr>`).join("")}
+          </table>
+        </body>
+      </html>
+    `;
+    printWindow.document.write(html);
+    printWindow.document.close();
+    printWindow.print();
+  };
+
   const callsCount = new Set(demandRows.flatMap((row) => row.callIds)).size;
   const totalDemand = demandRows.reduce((sum, row) => sum + row.quantity, 0);
   const stockout = demandRows.find((row) => row.shortage > 0);
@@ -322,6 +496,105 @@ export default function SupplyPage() {
           </Paper>
         </>
       )}
+      <Paper sx={{ p: 3 }}>
+        <Typography variant="h6" sx={{ mb: 2 }}>Órdenes de Trabajo · Picking</Typography>
+        {calls.length === 0 ? (
+          <Typography color="text.secondary">No hay órdenes de trabajo disponibles.</Typography>
+        ) : (
+          <Stack spacing={2}>
+            {calls.map((call) => {
+              const route = routeById.get(call.routeId);
+              if (!route) return null;
+              const pickingMaterials: PickingItem[] = route.operations.flatMap((op: RouteOperation) =>
+                op.materials.map((mat) => ({
+                  code: mat.code,
+                  name: mat.name,
+                  quantity: mat.quantity,
+                  unit: mat.unit,
+                  location: getMaterialLocation(mat.code),
+                  available: getAvailableStock(mat.code),
+                })),
+              );
+              return (
+                <Paper key={call.id} sx={{ p: 2, bgcolor: "background.default" }}>
+                  <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <Box>
+                      <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+                        {call.id} · {route.name}
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {call.plan.equipmentId} · {formatDate(call.dueDate)}
+                      </Typography>
+                    </Box>
+                    <Stack direction="row" spacing={1}>
+                      <Button size="small" variant="outlined" startIcon={<Print />} onClick={() => printPicking(pickingMaterials)}>
+                        Imprimir
+                      </Button>
+                      <Button size="small" variant="outlined" startIcon={<Download />} onClick={() => exportPickingToCSV(pickingMaterials)}>
+                        Exportar CSV
+                      </Button>
+                      <Button size="small" variant="contained" onClick={() => openPickingForOrder(call.id, pickingMaterials)}>
+                        Trabajar en PC
+                      </Button>
+                    </Stack>
+                  </Box>
+                </Paper>
+              );
+            })}
+          </Stack>
+        )}
+      </Paper>
+      <Dialog open={openPickingDialog} onClose={() => setOpenPickingDialog(false)} maxWidth="sm" fullWidth>
+        <DialogTitle>Formulario de Picking</DialogTitle>
+        <DialogContent>
+          <Stack spacing={2} sx={{ mt: 1 }}>
+            {currentPickingMaterials.map((material, idx) => (
+              <Paper key={idx} sx={{ p: 2, bgcolor: "background.default" }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                  {material.code} · {material.name}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Ubicación: {material.location} | Stock: {material.available} {material.unit}
+                </Typography>
+                <TextField
+                  fullWidth
+                  size="small"
+                  label="Cantidad tomada"
+                  type="number"
+                  value={material.pickedQuantity || ""}
+                  onChange={(e) => {
+                    const updated = [...currentPickingMaterials];
+                    updated[idx].pickedQuantity = parseInt(e.target.value) || 0;
+                    setCurrentPickingMaterials(updated);
+                  }}
+                  sx={{ mt: 1 }}
+                  slotProps={{ htmlInput: { min: 0, max: material.available } }}
+                />
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      checked={material.toQuality || false}
+                      onChange={(e) => {
+                        const updated = [...currentPickingMaterials];
+                        updated[idx].toQuality = e.target.checked;
+                        setCurrentPickingMaterials(updated);
+                      }}
+                    />
+                  }
+                  label="Traspasar a calidad"
+                  sx={{ mt: 1 }}
+                />
+              </Paper>
+            ))}
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setOpenPickingDialog(false)}>Cancelar</Button>
+          <Button onClick={savePicking} variant="contained">
+            Guardar Picking
+          </Button>
+        </DialogActions>
+      </Dialog>
       <Alert severity="info">
         El saldo proyectado descuenta stock libre y OC aprobadas según fecha de entrega. El tránsito sin fecha confirmada se muestra aparte, no reduce el saldo y evita duplicar solicitudes por la cantidad ya comprada; material bloqueado por Calidad no está disponible.
       </Alert>

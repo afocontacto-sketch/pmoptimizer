@@ -16,13 +16,16 @@ import {
   TableRow,
   TextField,
   Typography,
+  IconButton,
 } from "@mui/material";
+import { Delete as DeleteIcon, Edit as EditIcon } from "@mui/icons-material";
 import { makeFinanceId, readFinanceState, readFinanceList, saveFinanceState } from "./financeData";
 import type { FinanceAccount, JournalEntry } from "./financeData";
 
 export const hrEmployeesStorageKey = "pmoptimizer-hr-employees";
 export const payrollRunsStorageKey = "pmoptimizer-payroll-runs";
 export const hrLeavesStorageKey = "pmoptimizer-hr-leaves";
+export const hrContractsStorageKey = "pmoptimizer-hr-contracts";
 
 export type Employee = {
   id: string;
@@ -44,6 +47,17 @@ export type Employee = {
   supervisorLogin?: string;
 };
 export type ProjectContract = { code: string; client: string; active: boolean; };
+export type HrContract = {
+  id: string;
+  code: string;
+  client: string;
+  type: "fijo" | "variable" | "mixto";
+  costPerHour: number;
+  startDate: string;
+  endDate: string;
+  description: string;
+  createdAt: string;
+};
 type PayrollLine = {
   employeeId: string;
   employee: string;
@@ -80,6 +94,19 @@ const demoEmployees: Employee[] = [
   { id: "EMP-003", name: "Paula Soto", position: "Administración", contractType: "Indefinido", monthlySalary: 1250000, hoursPerMonth: 180, deductionPercent: 20, direct: false, contractCode: "", contractCodes: ["CT1234"] },
 ];
 const demoContracts: ProjectContract[] = [{ code: "CT1234", client: "Fiat Chile", active: true }];
+const demoHrContracts: HrContract[] = [
+  {
+    id: "HR-001",
+    code: "CT1234",
+    client: "Fiat Chile",
+    type: "mixto",
+    costPerHour: 6100,
+    startDate: "2024-01-01",
+    endDate: "2025-12-31",
+    description: "Servicios de mantenimiento integral",
+    createdAt: new Date().toISOString(),
+  },
+];
 const expenseCode = "510301";
 const payableCode = "210301";
 const deductionsCode = "210302";
@@ -87,6 +114,15 @@ const deductionsCode = "210302";
 function readList<T>(key: string, fallback: T[]): T[] {
   const saved = readFinanceList<T>(key);
   return saved.length ? saved : fallback;
+}
+
+export function readHrContracts(): HrContract[] {
+  return readList<HrContract>(hrContractsStorageKey, demoHrContracts);
+}
+
+export function getContractCostPerHour(contractCode: string, fallback: number): number {
+  const contract = readHrContracts().find((item) => item.code === contractCode);
+  return contract ? contract.costPerHour : fallback;
 }
 
 export function readHrEmployees(): Employee[] {
@@ -156,17 +192,83 @@ function payrollEntry(run: PayrollRun, accounts: FinanceAccount[]): JournalEntry
 export default function HumanResourcesPage() {
   const [employees, setEmployees] = useState(readHrEmployees);
   const [contracts] = useState(readProjectContracts);
+  const [hrContracts, setHrContracts] = useState(readHrContracts);
   const [runs, setRuns] = useState(() => readList<PayrollRun>(payrollRunsStorageKey, []));
   const [leaves, setLeaves] = useState(() => readList<EmployeeLeave>(hrLeavesStorageKey, []));
   const [editingEmployeeId, setEditingEmployeeId] = useState("");
   const [draft, setDraft] = useState({ name: "", position: "", contractType: "Indefinido" as Employee["contractType"], contractStart: new Date().toISOString().slice(0, 10), contractEnd: "", employmentContractNumber: "", workSchedule: "", workplace: "", monthlySalary: "", hoursPerMonth: "180", deductionPercent: "20", direct: true, contractCodes: contracts[0]?.code ? [contracts[0].code] : [], supervisorId: "", supervisorLogin: "" });
   const [leaveDraft, setLeaveDraft] = useState({ employeeId: "", type: "Vacaciones" as LeaveType, startDate: new Date().toISOString().slice(0, 10), endDate: new Date().toISOString().slice(0, 10), details: "" });
+  const [editingContractId, setEditingContractId] = useState("");
+  const [contractDraft, setContractDraft] = useState({ code: "", client: "", type: "mixto" as HrContract["type"], costPerHour: "", startDate: new Date().toISOString().slice(0, 10), endDate: "", description: "" });
   const [period, setPeriod] = useState(new Date().toISOString().slice(0, 7));
   const [slipEmployeeId, setSlipEmployeeId] = useState("");
   const [slipPeriod, setSlipPeriod] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const indirectContracts = useMemo(() => contracts.filter((item) => item.active), [contracts]);
+
+  const saveHrContract = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const costPerHour = Number(contractDraft.costPerHour);
+    if (!contractDraft.code.trim() || !contractDraft.client.trim() || !Number.isFinite(costPerHour) || costPerHour <= 0 ||
+      !contractDraft.startDate || (contractDraft.endDate && contractDraft.endDate < contractDraft.startDate)) {
+      setError("Completa todos los campos del contrato correctamente.");
+      return;
+    }
+    const contract: HrContract = {
+      id: editingContractId || makeFinanceId("CT"),
+      code: contractDraft.code.trim(),
+      client: contractDraft.client.trim(),
+      type: contractDraft.type,
+      costPerHour,
+      startDate: contractDraft.startDate,
+      endDate: contractDraft.endDate,
+      description: contractDraft.description.trim(),
+      createdAt: editingContractId ? hrContracts.find((c) => c.id === editingContractId)?.createdAt ?? new Date().toISOString() : new Date().toISOString(),
+    };
+    const next = editingContractId
+      ? hrContracts.map((item) => item.id === editingContractId ? contract : item)
+      : [...hrContracts, contract];
+    try {
+      localStorage.setItem(hrContractsStorageKey, JSON.stringify(next));
+      setHrContracts(next);
+      setEditingContractId("");
+      setContractDraft({ code: "", client: "", type: "mixto", costPerHour: "", startDate: new Date().toISOString().slice(0, 10), endDate: "", description: "" });
+      setError("");
+      setMessage(editingContractId ? "Contrato actualizado." : "Contrato creado.");
+    } catch (cause) {
+      console.error("No se pudo guardar el contrato.", cause);
+      setError("No se pudo guardar el contrato.");
+    }
+  };
+
+  const deleteHrContract = (id: string) => {
+    const next = hrContracts.filter((item) => item.id !== id);
+    try {
+      localStorage.setItem(hrContractsStorageKey, JSON.stringify(next));
+      setHrContracts(next);
+      setError("");
+      setMessage("Contrato eliminado.");
+    } catch (cause) {
+      console.error("No se pudo eliminar el contrato.", cause);
+      setError("No se pudo eliminar el contrato.");
+    }
+  };
+
+  const editHrContract = (contract: HrContract) => {
+    setEditingContractId(contract.id);
+    setContractDraft({
+      code: contract.code,
+      client: contract.client,
+      type: contract.type,
+      costPerHour: String(contract.costPerHour),
+      startDate: contract.startDate,
+      endDate: contract.endDate,
+      description: contract.description,
+    });
+    setError("");
+    setMessage("");
+  };
 
   const saveEmployee = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -391,13 +493,38 @@ export default function HumanResourcesPage() {
     <Stack spacing={3}>
       <div>
         <Typography variant="h4">Recursos humanos y nómina</Typography>
-        <Typography color="text.secondary">Contratos laborales, costos horarios y prorrateo del personal indirecto entre uno o más contratos asignados.</Typography>
+        <Typography color="text.secondary">Gestión de contratos, empleados con asignación directa/indirecta, y cálculo automático de nóminas con prorrateo.</Typography>
       </div>
       <Alert severity="warning">Prototipo local: al último día del mes calcula la nómina si la aplicación está abierta; si no, usa el cálculo manual al ingresar. Las tasas de descuento son configurables y demostrativas, no cálculo legal chileno. AFP, salud, AFC, impuesto, Previred, liquidaciones y finiquitos requieren reglas vigentes y validación con contador/especialista laboral.</Alert>
       {error && <Alert severity="error">{error}</Alert>}
       {message && <Alert severity="success">{message}</Alert>}
+      
+      <Paper component="form" onSubmit={saveHrContract} sx={{ p: 3 }}>
+        <Typography variant="h6" sx={{ mb: 2 }}>{editingContractId ? "Editar contrato" : "Agregar contrato de servicios"}</Typography>
+        <Grid container spacing={2}>
+          <Grid size={{ xs: 12, md: 2 }}><TextField label="Código" value={contractDraft.code} onChange={(event) => setContractDraft((current) => ({ ...current, code: event.target.value }))} required fullWidth /></Grid>
+          <Grid size={{ xs: 12, md: 3 }}><TextField label="Cliente/Proyecto" value={contractDraft.client} onChange={(event) => setContractDraft((current) => ({ ...current, client: event.target.value }))} required fullWidth /></Grid>
+          <Grid size={{ xs: 12, md: 2 }}><TextField select label="Tipo" value={contractDraft.type} onChange={(event) => setContractDraft((current) => ({ ...current, type: event.target.value as HrContract["type"] }))} fullWidth><MenuItem value="fijo">Fijo</MenuItem><MenuItem value="variable">Variable</MenuItem><MenuItem value="mixto">Mixto</MenuItem></TextField></Grid>
+          <Grid size={{ xs: 12, md: 2 }}><TextField label="Costo/hora CLP" type="number" value={contractDraft.costPerHour} onChange={(event) => setContractDraft((current) => ({ ...current, costPerHour: event.target.value }))} required fullWidth /></Grid>
+          <Grid size={{ xs: 12, md: 2 }}><TextField label="Inicio" type="date" value={contractDraft.startDate} onChange={(event) => setContractDraft((current) => ({ ...current, startDate: event.target.value }))} slotProps={{ inputLabel: { shrink: true } }} required fullWidth /></Grid>
+          <Grid size={{ xs: 12, md: 2 }}><TextField label="Término" type="date" value={contractDraft.endDate} onChange={(event) => setContractDraft((current) => ({ ...current, endDate: event.target.value }))} slotProps={{ inputLabel: { shrink: true } }} fullWidth /></Grid>
+          <Grid size={{ xs: 12 }}><TextField label="Descripción" value={contractDraft.description} onChange={(event) => setContractDraft((current) => ({ ...current, description: event.target.value }))} multiline rows={2} fullWidth /></Grid>
+          <Grid size={{ xs: 12, md: 2 }}><Stack direction="row" spacing={1}><Button type="submit" variant="contained">{editingContractId ? "Guardar cambios" : "Guardar contrato"}</Button>{editingContractId && <Button onClick={() => { setEditingContractId(""); setContractDraft({ code: "", client: "", type: "mixto", costPerHour: "", startDate: new Date().toISOString().slice(0, 10), endDate: "", description: "" }); }}>Cancelar</Button>}</Stack></Grid>
+        </Grid>
+      </Paper>
+      
+      <Paper sx={{ p: 3 }}>
+        <Typography variant="h6" sx={{ mb: 2 }}>Contratos de servicios</Typography>
+        {hrContracts.length === 0 ? <Typography color="text.secondary">No hay contratos registrados.</Typography> : (
+          <Table size="small">
+            <TableHead><TableRow><TableCell>Código</TableCell><TableCell>Cliente</TableCell><TableCell>Tipo</TableCell><TableCell align="right">Costo/hora</TableCell><TableCell>Vigencia</TableCell><TableCell>Descripción</TableCell><TableCell>Acciones</TableCell></TableRow></TableHead>
+            <TableBody>{hrContracts.map((contract) => <TableRow key={contract.id}><TableCell>{contract.code}</TableCell><TableCell>{contract.client}</TableCell><TableCell><Chip label={contract.type} size="small" /></TableCell><TableCell align="right">${contract.costPerHour.toLocaleString("es-CL")}</TableCell><TableCell>{contract.startDate} {contract.endDate ? `/ ${contract.endDate}` : ""}</TableCell><TableCell>{contract.description || "—"}</TableCell><TableCell><Stack direction="row" spacing={0.5}><IconButton size="small" onClick={() => editHrContract(contract)}><EditIcon fontSize="small" /></IconButton><IconButton size="small" color="error" onClick={() => deleteHrContract(contract.id)}><DeleteIcon fontSize="small" /></IconButton></Stack></TableCell></TableRow>)}</TableBody>
+          </Table>
+        )}
+      </Paper>
+      
       <Paper component="form" onSubmit={saveEmployee} sx={{ p: 3 }}>
-        <Typography variant="h6" sx={{ mb: 2 }}>{editingEmployeeId ? "Editar trabajador y contrato laboral" : "Agregar trabajador y contrato laboral"}</Typography>
+        <Typography variant="h6" sx={{ mb: 2 }}>{editingEmployeeId ? "Editar trabajador" : "Agregar trabajador"}</Typography>
         <Grid container spacing={2}>
           <Grid size={{ xs: 12, md: 3 }}><TextField label="Nombre" value={draft.name} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} required fullWidth /></Grid>
           <Grid size={{ xs: 12, md: 3 }}><TextField label="Cargo / especialidad" value={draft.position} onChange={(event) => setDraft((current) => {

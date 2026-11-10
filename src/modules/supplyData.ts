@@ -1,6 +1,7 @@
 export const purchaseRequestsStorageKey = "pmoptimizer-purchase-requests";
 export const purchaseOrdersStorageKey = "pmoptimizer-purchase-orders";
 export const suppliersStorageKey = "pmoptimizer-suppliers";
+export const quotationsStorageKey = "pmoptimizer-quotations";
 
 export type SupplierMaster = {
   id: string;
@@ -30,11 +31,17 @@ export type PurchaseRequest = {
   quotes?: PurchaseQuote[];
 };
 
+export type QuotationStatus = "Pendiente" | "Ganadora" | "Rechazada" | "Expirada";
+
 export type PurchaseQuote = {
   id: string;
   supplier: string;
   unitCost: number;
   expectedDate: string;
+  status?: QuotationStatus;
+  discount?: number;
+  paymentTerms?: string;
+  awardedDate?: string;
 };
 
 export type PurchaseOrder = {
@@ -51,6 +58,22 @@ export type PurchaseOrder = {
   status: "Pendiente aprobación" | "Aprobada" | "Rechazada" | "Recepcionada";
   approvedBy?: string;
   selectedQuoteId?: string;
+  winningQuoteId?: string;
+};
+
+export type AwardHistory = {
+  id: string;
+  requestId: string;
+  materialCode: string;
+  materialName: string;
+  quantity: number;
+  unit: string;
+  winningQuoteId: string;
+  supplier: string;
+  unitCost: number;
+  awardedDate: string;
+  expectedDate: string;
+  purchaseOrderId: string;
 };
 
 export function readStoredList<T>(key: string): T[] {

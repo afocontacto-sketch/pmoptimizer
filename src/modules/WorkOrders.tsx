@@ -6,6 +6,10 @@ import {
   Button,
   Chip,
   Checkbox,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Divider,
   FormControlLabel,
   Grid,
@@ -92,6 +96,14 @@ type StockMovement = {
   user: string;
 };
 
+type StatusChangeRecord = {
+  date: string;
+  previousStatus: OrderStatus;
+  newStatus: OrderStatus;
+  user: string;
+  reason?: string;
+};
+
 type WorkOrder = {
   id: string;
   contract: string;
@@ -118,6 +130,9 @@ type WorkOrder = {
   qualityApproved?: boolean;
   qualityApprovedBy?: string | null;
   supervisorClosedBy: string | null;
+  closedAt?: string;
+  closedBy?: string;
+  statusHistory?: StatusChangeRecord[];
 };
 
 type StockBin = {
@@ -291,7 +306,7 @@ const initialStock: StockBin[] = [
   { id: "BIN-07", code: "MAT-422", name: "Rodamiento SKF 6205", warehouse: "Recepciones", location: "TRANSITO", status: "En tránsito", quantity: 8, reserved: 0, unit: "unidad", unitCost: 7800, reference: "OC-4502" },
 ];
 
-const ordersStorageKey = "pmoptimizer-work-orders";
+const ordersStorageKey = "pmoptimizer-work-orders-v2";
 const stockStorageKey = "pmoptimizer-warehouse-bins";
 const stockMovementStorageKey = "pmoptimizer-warehouse-movements";
 const typeLabels: Record<OrderType, string> = {
@@ -551,6 +566,10 @@ export default function WorkOrders({
   const [warehouseImportMessage, setWarehouseImportMessage] = useState("");
   const [warehouseImportError, setWarehouseImportError] = useState("");
   const [assignmentDrafts, setAssignmentDrafts] = useState<Record<string, string>>({});
+  const [operationsTab, setOperationsTab] = useState(0);
+  const [reopenModalOpen, setReopenModalOpen] = useState(false);
+  const [reopenOrderId, setReopenOrderId] = useState("");
+  const [reopenReason, setReopenReason] = useState("");
   const contracts = useMemo(readContracts, []);
   const employees = useMemo(readHrEmployees, []);
   const equipmentOptions = useMemo(() => {
@@ -624,6 +643,10 @@ export default function WorkOrders({
       order.timerStartedAt !== null ? Math.max(0, Math.floor((elapsedNow - order.timerStartedAt) / 1000)) : 0
     ),
   }));
+  
+  const activeWorkOrders = visibleOrders.filter((order) => order.status !== "Cerrada" && supervisorCanSeeOrder(order));
+  const closedWorkOrders = visibleOrders.filter((order) => order.status === "Cerrada" && (isSupervisor || role === "Administrador"));
+  
   const totalsByWbs = currentContract.wbs.map((element) => {
     const linked = visibleOrders.filter((order) => order.wbs === element.code);
     const actual = linked.reduce((sum, order) => sum + allocatedCost(order, stock, order.currentSeconds), 0);
@@ -962,24 +985,63 @@ export default function WorkOrders({
       setError("Calidad debe aprobar el checklist antes del cierre final.");
       return;
     }
-    updateOrder(orderId, (item) => ({ ...item, status: "Cerrada", supervisorClosedBy: user }));
+    const previousStatus = order.status;
+    updateOrder(orderId, (item) => {
+      const now = new Date().toISOString();
+      return {
+        ...item,
+        status: "Cerrada",
+        supervisorClosedBy: user,
+        closedAt: now,
+        closedBy: user,
+        statusHistory: [
+          ...(item.statusHistory ?? []),
+          {
+            date: now,
+            previousStatus,
+            newStatus: "Cerrada",
+            user,
+          },
+        ],
+      };
+    });
     setMessage(`${orderId} cerrada por ${user}.`);
     setError("");
   };
 
-  const reopenOrder = (orderId: string) => {
-    if (!canCloseOrders) {
-      setError("Solo Administrador puede reabrir una OT cerrada.");
+  const reopenOrder = (orderId: string, reason: string) => {
+    if (!isSupervisor) {
+      setError("Solo Supervisor puede reabrir una OT cerrada.");
       return;
     }
+    if (!reason.trim()) {
+      setError("Completa el motivo de reapertura.");
+      return;
+    }
+    const order = orders.find((item) => item.id === orderId);
+    if (!order || order.status !== "Cerrada") {
+      setError("Solo se pueden reabrir órdenes en estado Cerrada.");
+      return;
+    }
+    const now = new Date().toISOString();
     updateOrder(orderId, (order) => ({
       ...order,
       status: "Asignada",
       supervisorClosedBy: null,
       qualityApproved: false,
       qualityApprovedBy: null,
+      statusHistory: [
+        ...(order.statusHistory ?? []),
+        {
+          date: now,
+          previousStatus: "Cerrada",
+          newStatus: "Asignada",
+          user,
+          reason: reason.trim(),
+        },
+      ],
     }));
-    setMessage(`${orderId} reabierta por ${user}; vuelve a la bandeja de trabajo.`);
+    setMessage(`${orderId} reabierta por ${user} - Motivo: ${reason}`);
     setError("");
   };
 
@@ -1740,6 +1802,14 @@ export default function WorkOrders({
               </Box>
               {!isSupervisor && <Button startIcon={<Download />} onClick={exportOrderTemplate}>Plantilla CSV de OT</Button>}
             </Stack>
+            <Box sx={{ borderBottom: 1, borderColor: "divider", mb: 2 }}>
+              <Tabs value={operationsTab} onChange={(_, value: number) => setOperationsTab(value)}>
+                <Tab label={`Órdenes Activas (${activeWorkOrders.length})`} value={0} />
+                {(isSupervisor || role === "Administrador") && <Tab label={`Órdenes Cerradas (${closedWorkOrders.length})`} value={1} />}
+              </Tabs>
+            </Box>
+            {operationsTab === 0 && (
+            <>
             <Table size="small">
               <TableHead><TableRow>
                 <TableCell>OT / equipo</TableCell>
@@ -1749,7 +1819,7 @@ export default function WorkOrders({
                 {!isSupervisor && <><TableCell>Tiempo plan / real</TableCell><TableCell align="right">Costo real</TableCell></>}
                 <TableCell>Acciones</TableCell>
               </TableRow></TableHead>
-              <TableBody>{visibleOrders.filter((order) => order.status !== "Cerrada" && supervisorCanSeeOrder(order)).map((order) => (
+              <TableBody>{activeWorkOrders.map((order) => (
                 <TableRow key={order.id}>
                   <TableCell>
                     <Typography sx={{ fontWeight: 700 }}>{order.id}</Typography>
@@ -1795,31 +1865,90 @@ export default function WorkOrders({
               ))}</TableBody>
             </Table>
             {!isSupervisor && activeOrder && <Alert severity="info" sx={{ mt: 2 }}>Cronómetro activo: {activeOrder.id} · {durationLabel(visibleOrders.find((order) => order.id === activeOrder.id)?.currentSeconds ?? 0)}.</Alert>}
+            {activeWorkOrders.length === 0 && <Alert severity="info" sx={{ mt: 2 }}>No hay órdenes activas en este momento.</Alert>}
+            </>
+            )}
+            
+            {operationsTab === 1 && (isSupervisor || role === "Administrador") && (
+            <Box>
+              {closedWorkOrders.length === 0 ? (
+                <Alert severity="info">No hay órdenes cerradas.</Alert>
+              ) : (
+                <Table size="small">
+                  <TableHead><TableRow><TableCell>OT</TableCell><TableCell>Equipo / trabajo</TableCell><TableCell>Contrato / WBS</TableCell><TableCell>Técnico</TableCell><TableCell>Costos reales</TableCell><TableCell>Cerrado por</TableCell><TableCell>Fecha/Hora</TableCell><TableCell>Historial</TableCell><TableCell>Acción</TableCell></TableRow></TableHead>
+                  <TableBody>{closedWorkOrders.map((order) => (
+                    <TableRow key={order.id} sx={{ opacity: 0.7, backgroundColor: "#f5f5f5" }}>
+                      <TableCell>{order.id}</TableCell>
+                      <TableCell>{order.equipment}<Typography variant="caption" sx={{ display: "block" }}>{order.description}</Typography></TableCell>
+                      <TableCell>{order.contract}<Typography variant="caption" sx={{ display: "block" }}>{order.wbs}</Typography></TableCell>
+                      <TableCell>{order.technician}</TableCell>
+                      <TableCell>{money(allocatedCost(order, stock, order.currentSeconds))}</TableCell>
+                      <TableCell>{order.closedBy ?? "—"}</TableCell>
+                      <TableCell>{order.closedAt ? new Intl.DateTimeFormat("es-CL", { dateStyle: "short", timeStyle: "short" }).format(new Date(order.closedAt)) : "—"}</TableCell>
+                      <TableCell>
+                        {order.statusHistory && order.statusHistory.length > 0 ? (
+                          <Stack spacing={0.5}>
+                            {order.statusHistory.map((record, idx) => (
+                              <Typography key={idx} variant="caption" sx={{ display: "block" }}>
+                                {record.previousStatus} → {record.newStatus}
+                                {record.reason && ` (${record.reason})`}
+                              </Typography>
+                            ))}
+                          </Stack>
+                        ) : "—"}
+                      </TableCell>
+                      <TableCell>
+                        {isSupervisor && (
+                          <Button size="small" variant="outlined" onClick={() => {
+                            setReopenOrderId(order.id);
+                            setReopenModalOpen(true);
+                            setReopenReason("");
+                          }}>
+                            Reabrir
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}</TableBody>
+                </Table>
+              )}
+            </Box>
+            )}
           </Paper>
-          {!isSupervisor && <Alert severity="info">El cierre final requiere aprobación de Calidad y luego un Administrador.</Alert>}
+          {!isSupervisor && operationsTab === 0 && <Alert severity="info">El cierre final requiere aprobación de Calidad y luego un Administrador.</Alert>}
         </Stack>
       )}
 
       {tab === 5 && canCloseOrders && scope === "operations" && (
         <Paper sx={{ p: 3 }}>
           <Typography variant="h6" sx={{ mb: 2 }}>Órdenes cerradas · archivo de Supervisor</Typography>
-          {visibleOrders.filter((order) => order.status === "Cerrada").length === 0 ? (
+          {closedWorkOrders.length === 0 ? (
             <Alert severity="info">No hay órdenes cerradas.</Alert>
           ) : (
             <Table size="small">
-              <TableHead><TableRow><TableCell>OT</TableCell><TableCell>Equipo / trabajo</TableCell><TableCell>Contrato / WBS</TableCell><TableCell>Técnico</TableCell><TableCell>Costos reales</TableCell><TableCell>Cierre</TableCell><TableCell>Acción</TableCell></TableRow></TableHead>
-              <TableBody>{visibleOrders.filter((order) => order.status === "Cerrada").map((order) => (
-                <TableRow key={order.id}>
+              <TableHead><TableRow><TableCell>OT</TableCell><TableCell>Equipo / trabajo</TableCell><TableCell>Contrato / WBS</TableCell><TableCell>Técnico</TableCell><TableCell>Costos reales</TableCell><TableCell>Cerrado por</TableCell><TableCell>Fecha/Hora</TableCell><TableCell>Acción</TableCell></TableRow></TableHead>
+              <TableBody>{closedWorkOrders.map((order) => (
+                <TableRow key={order.id} sx={{ opacity: 0.6, backgroundColor: "#f5f5f5" }}>
                   <TableCell>{order.id}</TableCell><TableCell>{order.equipment}<Typography variant="caption" sx={{ display: "block" }}>{order.description}</Typography></TableCell>
                   <TableCell>{order.contract}<Typography variant="caption" sx={{ display: "block" }}>{order.wbs}</Typography></TableCell>
                   <TableCell>{order.technician}</TableCell><TableCell>{money(allocatedCost(order, stock, order.currentSeconds))}</TableCell>
-                  <TableCell>{order.supervisorClosedBy ?? "—"}</TableCell>
-                  <TableCell><Button size="small" variant="outlined" onClick={() => reopenOrder(order.id)}>Reabrir OT</Button></TableCell>
+                  <TableCell>{order.closedBy ?? "—"}</TableCell>
+                  <TableCell>{order.closedAt ? new Intl.DateTimeFormat("es-CL", { dateStyle: "short", timeStyle: "short" }).format(new Date(order.closedAt)) : "—"}</TableCell>
+                  <TableCell>
+                    {isSupervisor && (
+                      <Button size="small" variant="outlined" onClick={() => {
+                        setReopenOrderId(order.id);
+                        setReopenModalOpen(true);
+                        setReopenReason("");
+                      }}>
+                        Reabrir
+                      </Button>
+                    )}
+                  </TableCell>
                 </TableRow>
               ))}</TableBody>
             </Table>
           )}
-
         </Paper>
       )}
 
@@ -2185,6 +2314,54 @@ export default function WorkOrders({
           </Paper>
         </Stack>
       )}
+
+      <Dialog open={reopenModalOpen} onClose={() => {
+        setReopenModalOpen(false);
+        setReopenOrderId("");
+        setReopenReason("");
+      }} maxWidth="sm" fullWidth>
+        <DialogTitle>Reapertura de Orden de Trabajo</DialogTitle>
+        <DialogContent sx={{ pt: 2 }}>
+          <Stack spacing={2}>
+            <Box>
+              <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                Orden: {reopenOrderId}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Especifica el motivo de la reapertura para auditoría
+              </Typography>
+            </Box>
+            <TextField
+              fullWidth
+              multiline
+              minRows={3}
+              label="Motivo de reapertura"
+              placeholder="Ej: Se encontró defecto en prueba de calidad, se requiere reproceso"
+              value={reopenReason}
+              onChange={(event) => setReopenReason(event.target.value)}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => {
+            setReopenModalOpen(false);
+            setReopenOrderId("");
+            setReopenReason("");
+          }}>Cancelar</Button>
+          <Button
+            variant="contained"
+            onClick={() => {
+              reopenOrder(reopenOrderId, reopenReason);
+              setReopenModalOpen(false);
+              setReopenOrderId("");
+              setReopenReason("");
+            }}
+            disabled={!reopenReason.trim()}
+          >
+            Reabrir OT
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Stack>
   );
 }

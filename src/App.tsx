@@ -552,33 +552,30 @@ type AppLayoutProps = {
   onLogout: () => void;
 };
 
-function BrandLogo({ compact = false }: { compact?: boolean }) {
+function BrandLogo({ compact = false, size }: { compact?: boolean; size?: number }) {
   const [logoUnavailable, setLogoUnavailable] = useState(false);
+  const logoSize = size ?? (compact ? 48 : 160);
+
+  if (!logoUnavailable) {
+    return (
+      <Box
+        component="img"
+        src="/logo-pmoptimizer.jpg"
+        alt="PM Optimizer 360 · Consultoría Industrial"
+        onError={() => setLogoUnavailable(true)}
+        sx={{ width: logoSize, height: logoSize, objectFit: "contain", borderRadius: 2, bgcolor: "#fff" }}
+      />
+    );
+  }
 
   return (
     <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
-      {logoUnavailable ? (
-        <Avatar
-          variant="rounded"
-          sx={{ width: compact ? 42 : 64, height: compact ? 42 : 64, bgcolor: "#2563eb", fontWeight: 800 }}
-        >
-          PMO
-        </Avatar>
-      ) : (
-        <Box
-          component="img"
-          src="/PMO.jfif"
-          alt="Logo PMOPTIMIZER"
-          onError={() => setLogoUnavailable(true)}
-          sx={{
-            width: compact ? 42 : 64,
-            height: compact ? 42 : 64,
-            objectFit: "contain",
-            borderRadius: 1,
-            bgcolor: "#fff",
-          }}
-        />
-      )}
+      <Avatar
+        variant="rounded"
+        sx={{ width: compact ? 42 : 64, height: compact ? 42 : 64, bgcolor: "#2563eb", fontWeight: 800 }}
+      >
+        PMO
+      </Avatar>
       <Typography
         variant={compact ? "subtitle1" : "overline"}
         sx={{ fontWeight: 800, letterSpacing: compact ? 0.8 : 2, color: "inherit" }}
@@ -799,7 +796,7 @@ function Sidebar({ role, onNavigate }: { role: Role; onNavigate?: () => void }) 
   return (
     <Box sx={{ p: 2 }}>
       <Box sx={{ display: "flex", flexDirection: "column", alignItems: "flex-start", gap: 1, py: 1.5, px: 1.5 }}>
-        <BrandLogo compact />
+        <BrandLogo size={190} />
         <Typography variant="caption" sx={{ color: "#cbd5e1" }}>{role}</Typography>
       </Box>
 

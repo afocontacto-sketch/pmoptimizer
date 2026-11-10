@@ -4,7 +4,12 @@ import {
   Alert,
   Box,
   Button,
+  Checkbox,
   Chip,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   Grid,
   MenuItem,
   Paper,
@@ -71,11 +76,20 @@ type InvoiceDraft = {
   wbs: string;
 };
 type AccountDraft = { code: string; name: string; type: AccountType };
+type PayrollPaymentDraft = {
+  selectedRuns: string[];
+  paymentDate: string;
+  bankAccount: string;
+  reference: string;
+  observations: string;
+};
 
 const demoAccounts = defaultAccounts;
 const supplierAccountCode = "210101";
 const customerAccountCode = "110201";
 const bankAccountCode = "110101";
+const payableAccountCode = "210301";
+const personalExpenseAccountCode = "510301";
 const inputVatAccountCode = "110301";
 const outputVatAccountCode = "210201";
 const workOrdersStorageKey = "pmoptimizer-work-orders";
@@ -167,6 +181,31 @@ function makePaymentEntry(invoice: FinanceInvoice, accounts: FinanceAccount[], d
   };
 }
 
+function makePayrollPaymentEntry(
+  payrollId: string,
+  period: string,
+  net: number,
+  date: string,
+  bankCode: string,
+  reference: string,
+  accounts: FinanceAccount[]
+): JournalEntry {
+  const byCode = new Map(accounts.map((account) => [account.code, account]));
+  const payableAccount = requiredAccount(byCode, payableAccountCode);
+  const bankAccount = requiredAccount(byCode, bankCode);
+  
+  return {
+    id: makeFinanceId("ASI"),
+    date,
+    description: `Pago de nómina ${period} · ${reference}`,
+    sourceId: payrollId,
+    lines: [
+      makeLine(payableAccount, net, 0),
+      makeLine(bankAccount, 0, net),
+    ],
+  };
+}
+
 function readOperationsCost(): { id: string; contract: string; wbs: string; equipment: string; labor: number; materials: number; total: number }[] {
   const orders = readFinanceList<OperationalOrder>(workOrdersStorageKey);
   const bins = readFinanceList<StockBin>(warehouseStorageKey);
@@ -228,6 +267,17 @@ export default function AccountingPage({ role }: { role: string }) {
   const [paymentReference, setPaymentReference] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [payrollPaymentDialog, setPayrollPaymentDialog] = useState(false);
+  const [payrollPaymentDraft, setPayrollPaymentDraft] = useState<PayrollPaymentDraft>({
+    selectedRuns: [],
+    paymentDate: today(),
+    bankAccount: bankAccountCode,
+    reference: "",
+    observations: "",
+  });
+  const [payrollPaymentHistory, setPayrollPaymentHistory] = useState(() => 
+    readFinanceList<{ runId: string; period: string; date: string; amount: number; reference: string }>("pmoptimizer-payroll-payments", [])
+  );
   const canEdit = role === "Administrador" || role === "Contabilidad";
 
   useEffect(() => {
@@ -259,6 +309,7 @@ export default function AccountingPage({ role }: { role: string }) {
     period: string;
     status: string;
     gross: number;
+    deductions: number;
     net: number;
     lines: { employee: string; allocations: { contract: string; amount: number }[] }[];
   }>(payrollRunsStorageKey);
@@ -432,6 +483,75 @@ export default function AccountingPage({ role }: { role: string }) {
     setError("");
   };
 
+  const registerPayrollPayment = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!canEdit) {
+      setError("Solo Contabilidad o Administrador puede registrar pagos de nómina.");
+      return;
+    }
+    if (payrollPaymentDraft.selectedRuns.length === 0 || !validDate(payrollPaymentDraft.paymentDate) || 
+        !payrollPaymentDraft.reference.trim() || !payrollPaymentDraft.bankAccount) {
+      setError("Selecciona nóminas, fecha válida, banco y referencia de pago.");
+      return;
+    }
+
+    const selectedPayrollRuns = pendingPayroll.filter((run) => payrollPaymentDraft.selectedRuns.includes(run.id));
+    const totalNet = selectedPayrollRuns.reduce((sum, run) => sum + run.net, 0);
+
+    try {
+      const newEntries: JournalEntry[] = [];
+      const updatedPayrollRuns = payrollRuns.map((run) => {
+        if (payrollPaymentDraft.selectedRuns.includes(run.id)) {
+          const entry = makePayrollPaymentEntry(
+            run.id,
+            run.period,
+            run.net,
+            payrollPaymentDraft.paymentDate,
+            payrollPaymentDraft.bankAccount,
+            payrollPaymentDraft.reference.trim(),
+            finance.accounts
+          );
+          newEntries.push(entry);
+          return { ...run, status: "Pagada" as const };
+        }
+        return run;
+      });
+
+      const next = {
+        ...finance,
+        entries: [...newEntries, ...finance.entries],
+      };
+
+      if (persist(next, `${selectedPayrollRuns.length} nómina(s) pagada(s); ${totalNet.toLocaleString("es-CL")} CLP procesado(s).`)) {
+        localStorage.setItem(payrollRunsStorageKey, JSON.stringify(updatedPayrollRuns));
+        
+        const paymentRecords = selectedPayrollRuns.map((run) => ({
+          runId: run.id,
+          period: run.period,
+          date: payrollPaymentDraft.paymentDate,
+          amount: run.net,
+          reference: payrollPaymentDraft.reference.trim(),
+        }));
+        const updatedHistory = [...paymentRecords, ...payrollPaymentHistory];
+        setPayrollPaymentHistory(updatedHistory);
+        localStorage.setItem("pmoptimizer-payroll-payments", JSON.stringify(updatedHistory));
+
+        setPayrollPaymentDialog(false);
+        setPayrollPaymentDraft({
+          selectedRuns: [],
+          paymentDate: today(),
+          bankAccount: bankAccountCode,
+          reference: "",
+          observations: "",
+        });
+      }
+    } catch (paymentError) {
+      console.error("No se pudo registrar el pago de nómina.", paymentError);
+      setError(paymentError instanceof Error ? paymentError.message : "No se pudo registrar el pago de nómina.");
+    }
+  };
+
+  const bankAccounts = finance.accounts.filter((account) => account.type === "Activo" && account.name.includes("Banco"));
   const paymentInvoice = finance.invoices.find((invoice) => invoice.id === paymentTarget);
 
   return (
@@ -473,6 +593,7 @@ export default function AccountingPage({ role }: { role: string }) {
           <Tab label="Cuentas por cobrar" />
           <Tab label="Libro diario" />
           <Tab label="Plan de cuentas" />
+          <Tab label="Nóminas a Pagar" />
         </Tabs>
       </Paper>
 
@@ -747,6 +868,185 @@ export default function AccountingPage({ role }: { role: string }) {
               <Typography>Total haber</Typography><Typography>{money(totalCredits)}</Typography>
             </Stack>
           </Paper>
+        </Stack>
+      )}
+
+      {tab === 5 && (
+        <Stack spacing={3}>
+          <Paper sx={{ p: 3 }}>
+            <Stack spacing={2}>
+              <Box>
+                <Typography variant="h6" sx={{ mb: 1 }}>Nóminas a Pagar</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Gestión de pagos de nóminas y generación de asientos contables automáticos en Gastos de Personal.
+                </Typography>
+              </Box>
+              {pendingPayroll.length === 0 ? (
+                <Typography color="text.secondary">No hay nóminas pendientes de pago.</Typography>
+              ) : (
+                <>
+                  <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 2 }}>
+                    <Typography variant="subtitle2">
+                      {`${pendingPayroll.length} nómina(s) pendiente(s) · Total neto: ${money(pendingPayroll.reduce((sum, run) => sum + run.net, 0))}`}
+                    </Typography>
+                    {canEdit && (
+                      <Button variant="contained" startIcon={<Paid />} onClick={() => setPayrollPaymentDialog(true)}>
+                        Pagar Seleccionadas
+                      </Button>
+                    )}
+                  </Box>
+                  <Table size="small">
+                    <TableHead>
+                      <TableRow>
+                        <TableCell><Checkbox /></TableCell>
+                        <TableCell>Período</TableCell>
+                        <TableCell>Empleados</TableCell>
+                        <TableCell align="right">Salario Bruto</TableCell>
+                        <TableCell align="right">Descuentos</TableCell>
+                        <TableCell align="right">Salario Neto</TableCell>
+                        <TableCell>Estado</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {pendingPayroll.map((run) => (
+                        <TableRow key={run.id}>
+                          <TableCell>
+                            <Checkbox 
+                              checked={payrollPaymentDraft.selectedRuns.includes(run.id)}
+                              onChange={(event) => {
+                                setPayrollPaymentDraft((current) => ({
+                                  ...current,
+                                  selectedRuns: event.target.checked
+                                    ? [...current.selectedRuns, run.id]
+                                    : current.selectedRuns.filter((id) => id !== run.id),
+                                }));
+                              }}
+                            />
+                          </TableCell>
+                          <TableCell>{run.period}</TableCell>
+                          <TableCell>{run.lines.length} colaboradores</TableCell>
+                          <TableCell align="right">{money(run.gross)}</TableCell>
+                          <TableCell align="right">{money(run.deductions)}</TableCell>
+                          <TableCell align="right"><Typography sx={{ fontWeight: 700 }}>{money(run.net)}</Typography></TableCell>
+                          <TableCell><Chip size="small" label={run.status} color="warning" /></TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </>
+              )}
+            </Stack>
+          </Paper>
+
+          {payrollPaymentHistory.length > 0 && (
+            <Paper sx={{ p: 3 }}>
+              <Typography variant="h6" sx={{ mb: 2 }}>Historial de Pagos de Nóminas</Typography>
+              <Table size="small">
+                <TableHead>
+                  <TableRow>
+                    <TableCell>Período</TableCell>
+                    <TableCell>Fecha de Pago</TableCell>
+                    <TableCell align="right">Monto Pagado</TableCell>
+                    <TableCell>Referencia</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {payrollPaymentHistory.map((payment, index) => (
+                    <TableRow key={index}>
+                      <TableCell>{payment.period}</TableCell>
+                      <TableCell>{payment.date}</TableCell>
+                      <TableCell align="right">{money(payment.amount)}</TableCell>
+                      <TableCell>{payment.reference}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Paper>
+          )}
+
+          <Paper sx={{ p: 3 }}>
+            <Typography variant="h6" sx={{ mb: 2 }}>Reportes de Nómina</Typography>
+            <Stack spacing={2}>
+              <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 2 }}>
+                <Box>
+                  <Typography variant="body2" color="text.secondary">Total Pagado (mes actual)</Typography>
+                  <Typography sx={{ fontWeight: 700, mt: 0.5 }}>
+                    {money(payrollPaymentHistory.filter((p) => p.date.startsWith(today().slice(0, 7))).reduce((sum, p) => sum + p.amount, 0))}
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography variant="body2" color="text.secondary">Total Pendiente</Typography>
+                  <Typography sx={{ fontWeight: 700, mt: 0.5 }}>
+                    {money(pendingPayroll.reduce((sum, run) => sum + run.net, 0))}
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography variant="body2" color="text.secondary">Gastos de Personal (contabilizado)</Typography>
+                  <Typography sx={{ fontWeight: 700, mt: 0.5 }}>
+                    {money(finance.entries.flatMap((e) => e.lines).filter((l) => l.accountCode === personalExpenseAccountCode).reduce((sum, l) => sum + l.debit, 0))}
+                  </Typography>
+                </Box>
+              </Box>
+            </Stack>
+          </Paper>
+
+          <Dialog open={payrollPaymentDialog} onClose={() => setPayrollPaymentDialog(false)} maxWidth="sm" fullWidth>
+            <DialogTitle>Registrar Pago de Nóminas</DialogTitle>
+            <form onSubmit={registerPayrollPayment}>
+              <DialogContent sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                <Box>
+                  <Typography variant="subtitle2" sx={{ mb: 1 }}>
+                    Nóminas seleccionadas: {payrollPaymentDraft.selectedRuns.length}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Total: {money(pendingPayroll.filter((r) => payrollPaymentDraft.selectedRuns.includes(r.id)).reduce((sum, r) => sum + r.net, 0))}
+                  </Typography>
+                </Box>
+                <TextField
+                  label="Fecha de pago"
+                  type="date"
+                  value={payrollPaymentDraft.paymentDate}
+                  onChange={(event) => setPayrollPaymentDraft((current) => ({ ...current, paymentDate: event.target.value }))}
+                  slotProps={{ inputLabel: { shrink: true } }}
+                  required
+                  fullWidth
+                />
+                <TextField
+                  select
+                  label="Banco / Cuenta de Pago"
+                  value={payrollPaymentDraft.bankAccount}
+                  onChange={(event) => setPayrollPaymentDraft((current) => ({ ...current, bankAccount: event.target.value }))}
+                  required
+                  fullWidth
+                >
+                  {bankAccounts.map((account) => (
+                    <MenuItem key={account.code} value={account.code}>
+                      {account.code} · {account.name}
+                    </MenuItem>
+                  ))}
+                </TextField>
+                <TextField
+                  label="Referencia de pago (ej: Transferencia #12345)"
+                  value={payrollPaymentDraft.reference}
+                  onChange={(event) => setPayrollPaymentDraft((current) => ({ ...current, reference: event.target.value }))}
+                  required
+                  fullWidth
+                />
+                <TextField
+                  label="Observaciones"
+                  value={payrollPaymentDraft.observations}
+                  onChange={(event) => setPayrollPaymentDraft((current) => ({ ...current, observations: event.target.value }))}
+                  multiline
+                  rows={3}
+                  fullWidth
+                />
+              </DialogContent>
+              <DialogActions>
+                <Button onClick={() => setPayrollPaymentDialog(false)}>Cancelar</Button>
+                <Button type="submit" variant="contained">Confirmar Pago</Button>
+              </DialogActions>
+            </form>
+          </Dialog>
         </Stack>
       )}
     </Stack>
