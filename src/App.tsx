@@ -380,7 +380,7 @@ function AppLayout({ session, onLogout }: AppLayoutProps) {
         <Box sx={{ p: 3 }}>
           <Routes>
             <Route path="/dashboard" element={<RoleRoute role={session.role} path="/dashboard"><DashboardPage /></RoleRoute>} />
-            <Route path="/clientes" element={<RoleRoute role={session.role} path="/clientes"><ClientsPage role={session.role} /></RoleRoute>} />
+            <Route path="/clientes" element={<RoleRoute role={session.role} path="/clientes"><ClientsPage role={session.role} user={session.user} /></RoleRoute>} />
             <Route path="/materiales" element={<RoleRoute role={session.role} path="/materiales"><MaterialsMaster mode={can(session.role, "material.create") ? "master" : "readonly"} user={session.user} role={session.role} /></RoleRoute>} />
             <Route path="/produccion" element={<RoleRoute role={session.role} path="/produccion"><ProductionPage user={session.user} role={session.role} /></RoleRoute>} />
             <Route path="/bandeja" element={<RoleRoute role={session.role} path="/bandeja"><TechnicianInbox user={session.user} role={session.role} /></RoleRoute>} />

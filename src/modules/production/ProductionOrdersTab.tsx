@@ -43,16 +43,6 @@ export type ProductionOrder = {
   }>;
 };
 
-export type WorkAssignment = {
-  orderId: string;
-  technicianId: string;
-  technicianName: string;
-  status: "Pendiente" | "En progreso" | "Completado";
-  assignedAt: string;
-  completedAt?: string;
-  timeSpent?: number; // minutos
-};
-
 const productionOrdersKey = keys.productionOrders;
 // const workAssignmentsKey = "work-assignments"; // Reservado para futuro
 

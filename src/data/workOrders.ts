@@ -100,10 +100,6 @@ export const orderTypeColors: Record<OrderType, string> = {
   ESPERA: "#64748b",
 };
 
-export function readOrderRecords(): WorkOrder[] {
-  return readJson<WorkOrder[]>(keys.workOrders, []);
-}
-
 export function readTimeEntries(): TimeEntry[] {
   return readJson<TimeEntry[]>(keys.timeEntries, []);
 }

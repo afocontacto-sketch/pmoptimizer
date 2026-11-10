@@ -3,7 +3,7 @@ import type { Actor } from "./workOrders";
 import { appendAudit } from "./audit";
 import type { ApprovedBudget, EacSnapshot } from "./contracts";
 import { keys } from "./keys";
-import { mergeSnapshots, nextBudgetVersions, snapshotsFromRows } from "./projectCost";
+import { mergeSnapshots, nextBudgetVersions, periodOf, snapshotsFromRows } from "./projectCost";
 import type { BudgetLineInput, EacRow } from "./projectCost";
 import { fail, ok } from "./result";
 import type { Result } from "./result";
@@ -49,6 +49,9 @@ export function saveProvisionalSnapshots(rows: EacRow[], period: string, now: Da
 // Cierra el período: guarda snapshots closed=true y deja de recalcularse. Audit del cierre.
 export function closeMonth(rows: EacRow[], period: string, actor: Actor, now: Date = new Date()): Result<EacSnapshot[]> {
   if (!can(actor.role, "eac.closeMonth")) return fail("Solo PM Proyecto o Administrador puede cerrar el mes.");
+  if (!/^[0-9]{4}-(0[1-9]|1[0-2])$/.test(period) || period > periodOf(now.getFullYear(), now.getMonth() + 1)) {
+    return fail("Solo se puede cerrar el mes actual o meses anteriores.");
+  }
   const fresh = snapshotsFromRows(rows, period, now.toISOString(), actor.user);
   if (fresh.length === 0) return fail("No hay contratos para cerrar.");
   const before = readEacSnapshots();

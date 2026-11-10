@@ -33,8 +33,6 @@ export const keys = {
   auditLog: k("audit-log"),
   eacSnapshots: k("eac-snapshots"),
   approvedBudget: k("approved-budget"),
-  // Temporales: se eliminan en E0.2/E7.1 (flujos de Supply y llamadas persistidas).
-  maintenanceCalls: k("maintenance-calls"),
   // Módulos de Copilot sin commit (QualityPage, ClientsPage, ProductionPage); a consolidar luego.
   contractFiles: k("contracts-files"),
   qualityChecklists: k("quality-checklists"),

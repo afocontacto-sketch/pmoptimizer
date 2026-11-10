@@ -1,4 +1,6 @@
 import { keys } from "../data/keys";
+import { fail, ok } from "../data/result";
+import type { Result } from "../data/result";
 
 export const purchaseRequestsStorageKey = keys.purchaseRequests;
 export const purchaseOrdersStorageKey = keys.purchaseOrders;
@@ -117,4 +119,27 @@ export function requestCostAssignment(
 export function purchaseInvoiceWbsError(input: { kind: string; purchaseOrder?: string; wbs?: string }): string | null {
   if (input.kind !== "Compra" || input.purchaseOrder?.trim()) return null;
   return input.wbs?.trim() ? null : "Las facturas de compra sin OC exigen contrato y elemento WBS.";
+}
+
+// A3: solo una OC "Pendiente aprobación" puede aprobarse o rechazarse; el resto de estados es inmutable aquí.
+export function decidePurchaseOrder(
+  orders: PurchaseOrder[],
+  requests: PurchaseRequest[],
+  orderId: string,
+  approve: boolean,
+  user: string,
+): Result<{ orders: PurchaseOrder[]; requests: PurchaseRequest[] }> {
+  const order = orders.find((item) => item.id === orderId);
+  if (!order) return fail(`La OC ${orderId} no existe.`);
+  if (order.status !== "Pendiente aprobación") {
+    return fail(`La OC ${orderId} ya no está pendiente de aprobación (estado: ${order.status}).`);
+  }
+  return ok({
+    orders: orders.map((item) => item.id === orderId
+      ? { ...item, status: approve ? "Aprobada" as const : "Rechazada" as const, approvedBy: user }
+      : item),
+    requests: requests.map((item) => item.id === order.requestId
+      ? { ...item, status: approve ? "OC aprobada" as const : "Cotización en curso" as const }
+      : item),
+  });
 }

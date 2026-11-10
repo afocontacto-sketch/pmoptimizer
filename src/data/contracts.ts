@@ -1,6 +1,10 @@
+import { can } from "../app/permissions";
 import type { OrderType } from "./docNumbering";
 import { keys } from "./keys";
+import { fail, ok } from "./result";
+import type { Result } from "./result";
 import { readJson, updateJson } from "./storage";
+import type { Actor } from "./workOrders";
 
 export type WbsElement = {
   code: string;
@@ -38,13 +42,6 @@ export type EacSnapshot = {
   closed: boolean;
   closedBy?: string;
 };
-
-// Vigencia: sin fechas el contrato se considera siempre vigente.
-export function isContractActive(contract: Contract, isoDate: string): boolean {
-  if (contract.startDate && isoDate < contract.startDate) return false;
-  if (contract.endDate && isoDate > contract.endDate) return false;
-  return true;
-}
 
 export const demoContract: Contract = {
   code: "CT1234",
@@ -131,6 +128,97 @@ export function readClients(): ClientRecord[] {
 // Lee fresco, aplica fn y escribe; false si no se pudo guardar.
 export function updateClients(fn: (clients: ClientRecord[]) => ClientRecord[]): boolean {
   return updateJson<ClientRecord[]>(keys.clients, [], (current) => fn(Array.isArray(current) ? current : [])) !== null;
+}
+
+const norm = (code: string): string => code.trim().toUpperCase();
+
+// WBS sin código toman el valor por defecto `${contrato}-${tipo}` (único por contrato y apto para -GAR).
+export function resolveWbs(contractCode: string, wbs: ClientWbs[]): ClientWbs[] {
+  return wbs.map((element) => ({ ...element, code: element.code.trim() || `${contractCode.trim()}-${element.type}` }));
+}
+
+// Código de contrato y WBS únicos globales (incluye el contrato demo). Al editar se ignora el contrato con el mismo id.
+export function validateContractUnique(clients: ClientRecord[], contract: ClientContract): string | null {
+  const code = norm(contract.code);
+  if (!code) return "El código de contrato es obligatorio.";
+  const others: { code: string; wbs: string[] }[] = [
+    { code: demoContract.code, wbs: demoContract.wbs.map((element) => element.code) },
+    ...clients.flatMap((client) => client.contracts).filter((item) => item.id !== contract.id)
+      .map((item) => ({ code: item.code, wbs: item.wbs.map((element) => element.code) })),
+  ];
+  if (others.some((item) => norm(item.code) === code)) return `El código de contrato ${contract.code} ya existe.`;
+  const taken = new Set(others.flatMap((item) => item.wbs.map(norm)));
+  const own = new Set<string>();
+  for (const element of contract.wbs) {
+    const wbs = norm(element.code);
+    if (!wbs) return "Todos los WBS deben tener código.";
+    if (own.has(wbs)) return `El WBS ${element.code} está repetido en el contrato.`;
+    if (taken.has(wbs)) return `El WBS ${element.code} ya pertenece a otro contrato.`;
+    if (element.type === "GAR" && !wbs.endsWith("-GAR")) return `El WBS de garantía ${element.code} debe terminar en -GAR.`;
+    own.add(wbs);
+  }
+  return null;
+}
+
+// Crea o edita (mismo id) un contrato validando unicidad sobre datos frescos.
+export function saveContract(clientId: string, input: ClientContract, actor: Actor): Result<ClientContract> {
+  if (!can(actor.role, "client.edit")) return fail("Tu rol no tiene permiso para editar clientes.");
+  const clients = readClients();
+  if (!clients.some((client) => client.id === clientId)) return fail("El cliente ya no existe.");
+  const contract = { ...input, clientId, wbs: resolveWbs(input.code, input.wbs) };
+  const error = validateContractUnique(clients, contract);
+  if (error) return fail(error);
+  const saved = updateClients((list) => list.map((client) => client.id !== clientId ? client : {
+    ...client,
+    contracts: client.contracts.some((item) => item.id === contract.id)
+      ? client.contracts.map((item) => item.id === contract.id ? contract : item)
+      : [...client.contracts, contract],
+  }));
+  return saved ? ok(contract) : fail("No se pudo guardar el contrato (almacenamiento lleno o no disponible).");
+}
+
+type Tagged = { contract?: string; wbs?: string };
+
+// Documentos que referencian contratos o WBS (OT, OC, solicitudes, facturas, planes de mantenimiento).
+export function contractReferences(contracts: ClientContract[]): string[] {
+  const codes = new Set(contracts.map((item) => norm(item.code)));
+  const wbsCodes = new Set(contracts.flatMap((item) => item.wbs.map((element) => norm(element.code))));
+  const finance = readJson<{ invoices?: Tagged[] } | null>(keys.financeState, null);
+  const count = (list: unknown): number => (Array.isArray(list) ? (list as Tagged[]) : [])
+    .filter((item) => (item.contract && codes.has(norm(item.contract))) || (item.wbs && wbsCodes.has(norm(item.wbs)))).length;
+  const found: [string, number][] = [
+    ["órdenes de trabajo", count(readJson<unknown>(keys.workOrders, []))],
+    ["órdenes de compra", count(readJson<unknown>(keys.purchaseOrders, []))],
+    ["solicitudes de compra", count(readJson<unknown>(keys.purchaseRequests, []))],
+    ["facturas", count(finance?.invoices)],
+    ["planes de mantenimiento", count(readJson<unknown>(keys.maintenancePlans, []))],
+  ];
+  return found.filter(([, amount]) => amount > 0).map(([label, amount]) => `${amount} ${label}`);
+}
+
+function blockedMessage(what: string, references: string[]): string {
+  return `No se puede eliminar ${what}: tiene ${references.join(", ")} asociadas. Márcalo como Inactivo.`;
+}
+
+export function deleteContract(clientId: string, contractId: string, actor: Actor): Result {
+  if (!can(actor.role, "client.edit")) return fail("Tu rol no tiene permiso para editar clientes.");
+  const contract = readClients().find((client) => client.id === clientId)?.contracts.find((item) => item.id === contractId);
+  if (!contract) return fail("El contrato ya no existe.");
+  const references = contractReferences([contract]);
+  if (references.length) return fail(blockedMessage(`el contrato ${contract.code}`, references));
+  const saved = updateClients((list) => list.map((client) => client.id !== clientId ? client
+    : { ...client, contracts: client.contracts.filter((item) => item.id !== contractId) }));
+  return saved ? ok(undefined) : fail("No se pudo guardar el cambio (almacenamiento lleno o no disponible).");
+}
+
+export function deleteClient(clientId: string, actor: Actor): Result {
+  if (!can(actor.role, "client.edit")) return fail("Tu rol no tiene permiso para editar clientes.");
+  const client = readClients().find((item) => item.id === clientId);
+  if (!client) return fail("El cliente ya no existe.");
+  const references = contractReferences(client.contracts);
+  if (references.length) return fail(blockedMessage(`el cliente ${client.name}`, references));
+  const saved = updateClients((list) => list.filter((item) => item.id !== clientId));
+  return saved ? ok(undefined) : fail("No se pudo guardar el cambio (almacenamiento lleno o no disponible).");
 }
 
 const toOrderType = (type: ClientWbs["type"]): OrderType => (type === "IND" ? "ESPERA" : type);

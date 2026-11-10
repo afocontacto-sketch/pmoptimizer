@@ -1,5 +1,5 @@
 import { keys } from "./keys";
-import { readJson, updateJson } from "./storage";
+import { updateJson } from "./storage";
 
 export type AuditEntity = "material" | "order" | "payroll" | "budget" | "eac";
 
@@ -15,10 +15,6 @@ export type AuditRecord = {
   after?: unknown;
   reason?: string;
 };
-
-export function readAudit(): AuditRecord[] {
-  return readJson<AuditRecord[]>(keys.auditLog, []);
-}
 
 export function appendAudit(record: Omit<AuditRecord, "id" | "date">): boolean {
   const entry: AuditRecord = {

@@ -3,6 +3,7 @@ import type { Role } from "../app/roles";
 import { useMemo, useState } from "react";
 import { nextDocNumber } from "../data/docNumbering";
 import { readWbsChoices } from "../data/contracts";
+import { runAtomic, writeJson } from "../data/storage";
 import { printDocument } from "../components/print/printDocument";
 import { purchaseOrderDoc } from "../components/print/templates/purchaseOrderDoc";
 import { quoteComparisonDoc } from "../components/print/templates/quoteComparisonDoc";
@@ -36,6 +37,7 @@ import {
   suppliersStorageKey,
   quotationsStorageKey,
   requestCostAssignment,
+  decidePurchaseOrder,
 } from "./supplyData";
 import type { PurchaseOrder, PurchaseQuote, PurchaseRequest, SupplierMaster, AwardHistory } from "./supplyData";
 
@@ -85,22 +87,24 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
 
   const addSupplier = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (!canQuote) {
+      setError("Solo Compras puede administrar el maestro de proveedores.");
+      return;
+    }
     const name = supplierName.trim();
     if (!name || suppliers.some((supplier) => supplier.name.toLowerCase() === name.toLowerCase())) {
       setError("Ingresa un nombre de proveedor único para guardarlo en el maestro.");
       return;
     }
     const next = [...suppliers, { id: makeSupplyId("PROV"), name }];
-    try {
-      localStorage.setItem(suppliersStorageKey, JSON.stringify(next));
-      setSuppliers(next);
-      setSupplierName("");
-      setError("");
-      setMessage(`Proveedor ${name} agregado al maestro.`);
-    } catch (cause) {
-      console.error("No se pudo guardar el proveedor.", cause);
+    if (!writeJson(suppliersStorageKey, next)) {
       setError("No se pudo guardar el proveedor en este navegador.");
+      return;
     }
+    setSuppliers(next);
+    setSupplierName("");
+    setError("");
+    setMessage(`Proveedor ${name} agregado al maestro.`);
   };
 
   const printDoc = (template: ReturnType<typeof purchaseOrderDoc>) => {
@@ -110,22 +114,20 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
   };
 
   const updateData = (nextRequests: PurchaseRequest[], nextOrders: PurchaseOrder[], nextAwardHistory?: AwardHistory[]) => {
-    try {
-      localStorage.setItem(purchaseOrdersStorageKey, JSON.stringify(nextOrders));
-      localStorage.setItem(purchaseRequestsStorageKey, JSON.stringify(nextRequests));
-      if (nextAwardHistory) {
-        localStorage.setItem(quotationsStorageKey, JSON.stringify(nextAwardHistory));
-        setAwardHistory(nextAwardHistory);
-      }
-      setOrders(nextOrders);
-      setRequests(nextRequests);
-      setError("");
-      return true;
-    } catch (writeError) {
-      console.error("No se pudo guardar el flujo de compras.", writeError);
+    const steps: Array<() => boolean> = [
+      () => writeJson(purchaseOrdersStorageKey, nextOrders),
+      () => writeJson(purchaseRequestsStorageKey, nextRequests),
+    ];
+    if (nextAwardHistory) steps.push(() => writeJson(quotationsStorageKey, nextAwardHistory));
+    if (!runAtomic([purchaseOrdersStorageKey, purchaseRequestsStorageKey, quotationsStorageKey], steps)) {
       setError("No se pudieron guardar los cambios de compras en este navegador.");
       return false;
     }
+    if (nextAwardHistory) setAwardHistory(nextAwardHistory);
+    setOrders(nextOrders);
+    setRequests(nextRequests);
+    setError("");
+    return true;
   };
 
   const awardQuote = (request: PurchaseRequest, quote: PurchaseQuote) => {
@@ -218,13 +220,13 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
       setError("Solo el PM del proyecto puede aprobar órdenes de compra.");
       return;
     }
-    const nextOrders = orders.map((item) => item.id === order.id
-      ? { ...item, status: approve ? "Aprobada" as const : "Rechazada" as const, approvedBy: user }
-      : item);
-    const nextRequests = requests.map((item) => item.id === order.requestId
-      ? { ...item, status: approve ? "OC aprobada" as const : "Cotización en curso" as const }
-      : item);
-    if (updateData(nextRequests, nextOrders)) {
+    const freshOrders = readStoredList<PurchaseOrder>(purchaseOrdersStorageKey);
+    const decision = decidePurchaseOrder(freshOrders, readStoredList<PurchaseRequest>(purchaseRequestsStorageKey), order.id, approve, user);
+    if (!decision.ok) {
+      setError(decision.error);
+      return;
+    }
+    if (updateData(decision.value.requests, decision.value.orders)) {
       setMessage(approve ? `${order.id} aprobada por ${user}.` : `${order.id} rechazada; Compras puede ajustar la cotización.`);
     }
   };
@@ -239,6 +241,10 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
   };
 
   const saveQuotes = (request: PurchaseRequest) => {
+    if (!canQuote) {
+      setError("Solo Compras puede registrar cotizaciones.");
+      return;
+    }
     const entries = drafts[request.id] ?? [];
     const suppliers = entries.map((quote) => quote.supplier.trim().toLowerCase());
     if (entries.length !== 3 || entries.some((quote) => !quote.supplier.trim() ||

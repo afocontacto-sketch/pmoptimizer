@@ -32,6 +32,7 @@ export function recalculatePayrollRun(
   makeEntry: (run: PayrollRun, accounts: FinanceAccount[]) => JournalEntry,
 ): Result<PayrollRun> {
   if (!can(actor.role, "payroll.recalculate")) return fail("Solo Contabilidad o Administrador puede recalcular liquidaciones.");
+  if (lines.length === 0) return fail("La liquidación recalculada no tiene colaboradores.");
   const runs = readJson<PayrollRun[]>(keys.payrollRuns, []);
   const run = runs.find((item) => item.id === runId);
   if (!run) return fail("La liquidación no existe.");

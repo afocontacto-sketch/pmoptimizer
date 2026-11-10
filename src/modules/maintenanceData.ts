@@ -50,7 +50,6 @@ export type MaintenancePlan = {
 
 export const routeStorageKey = keys.maintenanceRoutes;
 export const planStorageKey = keys.maintenancePlans;
-export const maintenanceCallsStorageKey = keys.maintenanceCalls;
 
 export const sampleRoutes: RouteTemplate[] = [{
   id: "HR-VEH-001",

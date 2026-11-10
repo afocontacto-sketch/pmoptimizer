@@ -130,11 +130,6 @@ export function readHrContracts(): HrContract[] {
   return readList<HrContract>(hrContractsStorageKey, demoHrContracts);
 }
 
-export function getContractCostPerHour(contractCode: string, fallback: number): number {
-  const contract = readHrContracts().find((item) => item.code === contractCode);
-  return contract ? contract.costPerHour : fallback;
-}
-
 export function readHrEmployees(): Employee[] {
   return readList<Employee>(hrEmployeesStorageKey, demoEmployees).map((employee) => ({
     ...employee,

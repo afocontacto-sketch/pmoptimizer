@@ -147,13 +147,21 @@ export function computeEac(input: EacInput): EacRow[] {
     if (request.purchaseOrderId && orderIds.has(request.purchaseOrderId)) continue;
     add(place(request.wbs), "etc", "materials", request.quantity * (request.quotedUnitCost ?? 0));
   }
+  // Estado al corte: horas hasta el corte, OT cerradas después del corte siguen abiertas y el picking posterior no cuenta.
   const workedHours = new Map<string, number>();
   for (const entry of input.timeEntries) {
-    const end = entry.end ? Date.parse(entry.end) : input.nowMs;
+    const end = Math.min(entry.end ? Date.parse(entry.end) : input.nowMs, cutoffMs);
     workedHours.set(entry.orderId, (workedHours.get(entry.orderId) ?? 0) + Math.max(0, (end - Date.parse(entry.start)) / 3600000));
   }
+  const pickedAfterCutoff = new Map<string, number>();
+  for (const movement of input.movements) {
+    if (movement.type !== "Salida picking OT" || !movement.orderId || movement.date.slice(0, 10) <= cutoff) continue;
+    const key = `${movement.orderId}|${movement.code}`;
+    pickedAfterCutoff.set(key, (pickedAfterCutoff.get(key) ?? 0) + movement.quantity);
+  }
   for (const order of input.orders) {
-    if (order.status === "Cerrada") continue;
+    if (order.createdAt && order.createdAt.slice(0, 10) > cutoff) continue;
+    if (order.status === "Cerrada" && (!order.closedAt || order.closedAt.slice(0, 10) <= cutoff)) continue;
     const where = place(order.wbs);
     const ops = order.routeOperations ?? [];
     const opsHours = ops.reduce((sum, op) => sum + op.durationHours, 0);
@@ -163,7 +171,7 @@ export function computeEac(input: EacInput): EacRow[] {
     add(where, "etc", "labor", Math.max(0, order.projectedHours - (workedHours.get(order.id) ?? 0)) * rate);
     for (const line of order.materials ?? []) {
       const unitCost = averageCost(line.code, input.bins) || line.unitCostAvg || 0;
-      add(where, "etc", "materials", Math.max(0, line.required - line.picked) * unitCost);
+      add(where, "etc", "materials", Math.max(0, line.required - Math.max(0, line.picked - (pickedAfterCutoff.get(`${order.id}|${line.code}`) ?? 0))) * unitCost);
     }
   }
   const callsWithOrder = new Set(input.orders.map((order) => order.plannedCallId).filter(Boolean));
@@ -204,6 +212,9 @@ export function computeEac(input: EacInput): EacRow[] {
     const present = values.filter((value): value is number => value !== null);
     return present.length ? present.reduce((sum, value) => sum + value, 0) : null;
   };
+  // Filas agregadas: el EAC anterior solo es comparable si todas sus partes tienen snapshot previo.
+  const sumAll = (values: (number | null)[]): number | null =>
+    values.length > 0 && values.every((value) => value !== null) ? sumNullable(values) : null;
   const diff = (a: number | null, b: number | null): number | null => (a === null || b === null ? null : a - b);
   const makeRow = (key: string, kind: EacRowKind, contract: string, category: string, bucket: Bucket,
     previousEac: number | null, budget: number | null): EacRow => {
@@ -234,7 +245,7 @@ export function computeEac(input: EacInput): EacRow[] {
       prevs.push(previous);
       budgets.push(budget);
     }
-    const previous = sumNullable(prevs);
+    const previous = sumAll(prevs);
     rows.push(makeRow(`${contract.code}|Resultado`, "result", contract.code, "Resultado", total, previous, sumNullable(budgets)));
     addCost(grand.real, total.real);
     addCost(grand.etc, total.etc);
@@ -249,7 +260,7 @@ export function computeEac(input: EacInput): EacRow[] {
     grandPrev.push(previous);
   }
   const rowsBudget = sumNullable(rows.filter((row) => row.kind === "result").map((row) => row.budget));
-  rows.push(makeRow("TOTAL", "total", "", "Resultado total", grand, sumNullable(grandPrev), rowsBudget));
+  rows.push(makeRow("TOTAL", "total", "", "Resultado total", grand, sumAll(grandPrev), rowsBudget));
   return rows;
 }
 
@@ -319,10 +330,6 @@ export function snapshotsFromRows(rows: EacRow[], period: string, savedAt: strin
     closed: closedBy !== undefined,
     ...(closedBy !== undefined ? { closedBy } : {}),
   }));
-}
-
-export function isPeriodClosed(snapshots: EacSnapshot[], contract: string, period: string): boolean {
-  return snapshots.some((item) => item.contract === contract && item.period === period && item.closed);
 }
 
 // Reemplaza snapshots del mismo contrato+período+categoría salvo que ya estén cerrados.

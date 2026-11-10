@@ -91,20 +91,6 @@ export function readTransfers(): TransferOrder[] {
   return readJson<TransferOrder[]>(keys.transferOrders, []);
 }
 
-// Agrupa bins por material y estado (suma de cantidades).
-export function aggregateBins(bins: StockBin[]): Map<string, { free: number; quality: number; transit: number; total: number }> {
-  const result = new Map<string, { free: number; quality: number; transit: number; total: number }>();
-  for (const bin of bins) {
-    const row = result.get(bin.code) ?? { free: 0, quality: 0, transit: 0, total: 0 };
-    if (bin.status === "Libre utilización") row.free += bin.quantity;
-    else if (bin.status === "Bloqueado calidad") row.quality += bin.quantity;
-    else row.transit += bin.quantity;
-    row.total += bin.quantity;
-    result.set(bin.code, row);
-  }
-  return result;
-}
-
 // Costo medio ponderado sobre todos los bins del material con cantidad > 0.
 export function averageCost(code: string, bins: StockBin[]): number {
   const own = bins.filter((bin) => bin.code === code && bin.quantity > 0);
@@ -216,35 +202,52 @@ export function addDays(date: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+// OT abierta -> líneas con semáforo; null si no tiene pendientes. El ámbar suma calidad, tránsito y "Por ubicar".
+function toDispatchOrder(order: WorkOrder, rows: Map<string, StockRow>): DispatchOrder | null {
+  const lines = order.materials.filter((line) => pendingOf(line) > 0).map((line): DispatchLine => {
+    const row = rows.get(line.code);
+    const pending = pendingOf(line);
+    const free = row?.free ?? 0;
+    const light: Light = free >= pending ? "verde"
+      : free + (row?.unlocated ?? 0) + (row?.quality ?? 0) + (row?.transit ?? 0) >= pending ? "ambar" : "rojo";
+    return { code: line.code, name: line.name ?? row?.name ?? line.code, unit: line.unit ?? row?.unit ?? "", pending, free, light };
+  });
+  if (!lines.length) return null;
+  const light = lines.reduce<Light>((worst, line) => lightRank[line.light] > lightRank[worst] ? line.light : worst, "verde");
+  return { order, lines, light };
+}
+
+const dispatchRows = (bins: StockBin[]) => new Map(stockByMaterial(bins).map((row) => [row.code, row]));
+
 // Un día por columna desde hoy hasta hoy + horizonDays (inclusive).
 export function dispatchBoard(today: string, horizonDays = 3, orders: WorkOrder[] = readOrderList(), bins: StockBin[] = readBins()): DispatchDay[] {
-  const rows = new Map(stockByMaterial(bins).map((row) => [row.code, row]));
+  const rows = dispatchRows(bins);
   return Array.from({ length: horizonDays + 1 }, (_, index) => {
     const date = addDays(today, index);
     const dayOrders = orders.filter((order) => isOpenOrder(order) && order.dueDate === date)
-      .map((order): DispatchOrder | null => {
-        const lines = order.materials.filter((line) => pendingOf(line) > 0).map((line): DispatchLine => {
-          const row = rows.get(line.code);
-          const pending = pendingOf(line);
-          const free = row?.free ?? 0;
-          const light: Light = free >= pending ? "verde" : free + (row?.quality ?? 0) + (row?.transit ?? 0) >= pending ? "ambar" : "rojo";
-          return { code: line.code, name: line.name ?? row?.name ?? line.code, unit: line.unit ?? row?.unit ?? "", pending, free, light };
-        });
-        if (!lines.length) return null;
-        const light = lines.reduce<Light>((worst, line) => lightRank[line.light] > lightRank[worst] ? line.light : worst, "verde");
-        return { order, lines, light };
-      }).filter((item): item is DispatchOrder => item !== null);
+      .map((order) => toDispatchOrder(order, rows))
+      .filter((item): item is DispatchOrder => item !== null);
     return { date, orders: dayOrders };
   });
 }
 
-// Q4: solo los materiales con requiresInspection entran a "Bloqueado calidad"; el resto entra libre.
+// Columna "Vencidas": OT abiertas con dueDate anterior a hoy y picking pendiente.
+export function dispatchOverdue(today: string, orders: WorkOrder[] = readOrderList(), bins: StockBin[] = readBins()): DispatchOrder[] {
+  const rows = dispatchRows(bins);
+  return orders.filter((order) => isOpenOrder(order) && order.dueDate < today)
+    .map((order) => toDispatchOrder(order, rows))
+    .filter((item): item is DispatchOrder => item !== null);
+}
+
+// Q4: solo los materiales con requiresInspection (o ausentes del maestro) entran a "Bloqueado calidad"; el resto entra libre.
 export function receivingTarget(
   code: string,
   materials: MaterialRecord[] = readMaterials(),
   freeLocation = "REC-UBICAR",
 ): { status: StockStatus; location: string } {
-  return materials.find((material) => material.code === code)?.requiresInspection
+  // Material fuera del maestro: se trata como crítico y pasa por Calidad.
+  const master = materials.find((material) => material.code === code);
+  return !master || master.requiresInspection
     ? { status: "Bloqueado calidad", location: "REC-CALIDAD" }
     : { status: "Libre utilización", location: freeLocation };
 }

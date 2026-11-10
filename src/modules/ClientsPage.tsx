@@ -1,7 +1,7 @@
 import { can } from "../app/permissions";
 import type { Role } from "../app/roles";
-import { readClients, readContractFiles, saveContractFile, updateClients, validateContractDates, wbsSuffixes } from "../data/contracts";
-import type { ClientContract as Contract, ClientRecord as Client, ContractFile } from "../data/contracts";
+import { deleteClient, deleteContract, readClients, readContractFiles, saveContract, saveContractFile, updateClients, validateContractDates, wbsSuffixes } from "../data/contracts";
+import type { ClientContract as Contract, ClientRecord as Client, ClientWbs, ContractFile } from "../data/contracts";
 import { useState } from "react";
 import type { ChangeEvent } from "react";
 import {
@@ -40,7 +40,12 @@ function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-export default function ClientsPage({ role }: { role: Role }) {
+const defaultWbs = (): ClientWbs[] => [
+  { id: generateId("WBS"), code: "", type: "PRE", description: "Mantenimiento Preventivo" },
+  { id: generateId("WBS"), code: "", type: "COR", description: "Mantenimiento Correctivo" },
+];
+
+export default function ClientsPage({ role, user }: { role: Role; user: string }) {
   const canEdit = can(role, "client.edit");
   const [contractError, setContractError] = useState("");
   const [clients, setClients] = useState<Client[]>(readClients);
@@ -49,12 +54,8 @@ export default function ClientsPage({ role }: { role: Role }) {
   const [formData, setFormData] = useState<Partial<Client>>({});
   const [selectedClientForContract, setSelectedClientForContract] = useState<string>("");
   const [openContractDialog, setOpenContractDialog] = useState(false);
-  const [newContract, setNewContract] = useState<Partial<Contract>>({
-    wbs: [
-      { id: generateId("WBS"), code: "PRE-001", type: "PRE", description: "Mantenimiento Preventivo" },
-      { id: generateId("WBS"), code: "COR-001", type: "COR", description: "Mantenimiento Correctivo" },
-    ],
-  });
+  const [newContract, setNewContract] = useState<Partial<Contract>>({ wbs: defaultWbs() });
+  const [clientsError, setClientsError] = useState("");
 
 
   const handleNewClient = () => {
@@ -79,17 +80,10 @@ export default function ClientsPage({ role }: { role: Role }) {
       return;
     }
 
-    let updated: Client[];
+    let apply: (list: Client[]) => Client[];
     if (editingClient) {
-      updated = clients.map((c) =>
-        c.id === editingClient.id
-          ? {
-              ...c,
-              ...formData,
-              contracts: editingClient.contracts,
-            }
-          : c
-      );
+      apply = (list) => list.map((c) =>
+        c.id === editingClient.id ? { ...c, ...formData, contracts: c.contracts } : c);
     } else {
       const newClient: Client = {
         id: generateId("CLI"),
@@ -102,32 +96,40 @@ export default function ClientsPage({ role }: { role: Role }) {
         contracts: [],
         createdAt: new Date().toISOString(),
       };
-      updated = [...clients, newClient];
+      apply = (list) => [...list, newClient];
     }
 
-    setClients(updated);
-    updateClients(() => updated);
+    if (!updateClients(apply)) {
+      setClientsError("No se pudo guardar el cliente (almacenamiento lleno o no disponible).");
+      return;
+    }
+    setClientsError("");
+    setClients(readClients());
     setOpenDialog(false);
   };
 
   const handleDeleteClient = (clientId: string) => {
     if (!canEdit) return;
-    if (confirm("¿Eliminar cliente? (solo si no tiene órdenes activas)")) {
-      const updated = clients.filter((c) => c.id !== clientId);
-      setClients(updated);
-      updateClients(() => updated);
+    if (confirm("¿Eliminar cliente? (solo si sus contratos no tienen OT, OC o facturas asociadas)")) {
+      const result = deleteClient(clientId, { user, role });
+      setClientsError(result.ok ? "" : result.error);
+      setClients(readClients());
+    }
+  };
+
+  const handleDeleteContract = (clientId: string, contractId: string) => {
+    if (!canEdit) return;
+    if (confirm("¿Eliminar contrato? (solo si no tiene OT, OC o facturas asociadas)")) {
+      const result = deleteContract(clientId, contractId, { user, role });
+      setClientsError(result.ok ? "" : result.error);
+      setClients(readClients());
     }
   };
 
   const handleAddContract = (clientId: string) => {
     setSelectedClientForContract(clientId);
     setContractError("");
-    setNewContract({
-      wbs: [
-        { id: generateId("WBS"), code: "PRE-001", type: "PRE", description: "Mantenimiento Preventivo" },
-        { id: generateId("WBS"), code: "COR-001", type: "COR", description: "Mantenimiento Correctivo" },
-      ],
-    });
+    setNewContract({ wbs: defaultWbs() });
     setOpenContractDialog(true);
   };
 
@@ -156,17 +158,12 @@ export default function ClientsPage({ role }: { role: Role }) {
       createdAt: new Date().toISOString(),
     };
 
-    const updated = clients.map((c) =>
-      c.id === selectedClientForContract
-        ? {
-            ...c,
-            contracts: [...(c.contracts || []), contract],
-          }
-        : c
-    );
-
-    setClients(updated);
-    updateClients(() => updated);
+    const result = saveContract(selectedClientForContract, contract, { user, role });
+    if (!result.ok) {
+      setContractError(result.error);
+      return;
+    }
+    setClients(readClients());
     setOpenContractDialog(false);
   };
 
@@ -186,7 +183,7 @@ export default function ClientsPage({ role }: { role: Role }) {
         uploadDate: new Date().toISOString(),
       };
 
-      const updated = clients.map((c) =>
+      const saved = updateClients((list) => list.map((c) =>
         c.id === clientId
           ? {
               ...c,
@@ -194,13 +191,13 @@ export default function ClientsPage({ role }: { role: Role }) {
               contractFileName: file.name,
               contractFileDate: new Date().toISOString(),
             }
-          : c
-      );
-
-      setClients(updated);
-      updateClients(() => updated);
-
-      saveContractFile(contractFile);
+          : c));
+      if (!saved || !saveContractFile(contractFile)) {
+        setClientsError("No se pudo guardar el archivo del contrato (almacenamiento lleno o no disponible).");
+        return;
+      }
+      setClientsError("");
+      setClients(readClients());
     };
     reader.readAsDataURL(file);
   };
@@ -227,6 +224,7 @@ export default function ClientsPage({ role }: { role: Role }) {
         )}
       </Stack>
 
+      {clientsError && <Alert severity="error" sx={{ mb: 2 }}>{clientsError}</Alert>}
       <Stack direction="column" spacing={2}>
         {clients.map((client) => (
           <Box
@@ -285,6 +283,7 @@ export default function ClientsPage({ role }: { role: Role }) {
                     <TableCell>Vigencia</TableCell>
                     <TableCell align="right">Presupuesto</TableCell>
                     <TableCell>WBS</TableCell>
+                    {canEdit && <TableCell />}
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -299,6 +298,13 @@ export default function ClientsPage({ role }: { role: Role }) {
                       <TableCell>
                         {contract.wbs.length} elementos ({contract.wbs.map((w) => w.type).join(", ")})
                       </TableCell>
+                      {canEdit && (
+                        <TableCell>
+                          <IconButton size="small" color="error" aria-label="Eliminar contrato" onClick={() => handleDeleteContract(client.id, contract.id)}>
+                            <DeleteIcon />
+                          </IconButton>
+                        </TableCell>
+                      )}
                     </TableRow>
                   ))}
                 </TableBody>
@@ -509,6 +515,7 @@ export default function ClientsPage({ role }: { role: Role }) {
                 <Stack key={wbs.id} direction="row" spacing={1} sx={{ mb: 1 }}>
                   <TextField
                     label="Código"
+                    placeholder={`${newContract.code?.trim() || "CONTRATO"}-${wbs.type}`}
                     value={wbs.code}
                     onChange={(e) => {
                       const updated = [...(newContract.wbs || [])];
@@ -524,7 +531,7 @@ export default function ClientsPage({ role }: { role: Role }) {
                     value={wbs.type}
                     onChange={(e) => {
                       const updated = [...(newContract.wbs || [])];
-                      updated[idx].type = e.target.value as any;
+                      updated[idx].type = e.target.value as ClientWbs["type"];
                       setNewContract({ ...newContract, wbs: updated });
                     }}
                     size="small"
@@ -559,7 +566,7 @@ export default function ClientsPage({ role }: { role: Role }) {
                       {
                         id: generateId("WBS"),
                         code: "",
-                        type: "PRE",
+                        type: "PRE" as const,
                         description: "",
                       },
                     ],

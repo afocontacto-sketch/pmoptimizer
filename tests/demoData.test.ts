@@ -27,9 +27,14 @@ describe("bootstrapStorage + seedDemoData", () => {
 
   test("siembra OT, OC, SP y contrato con numeración nueva", () => {
     bootstrapStorage();
-    expect(read<{ id: string }[]>(keys.workOrders).map((order) => order.id))
-      .toEqual(["51000001", "61000001", "71000001", "81000001", "13000001"]);
-    expect(read<{ id: string }[]>(keys.purchaseOrders).map((order) => order.id)).toEqual(["31000001", "31000002"]);
+    const orders = read<{ id: string; type: string; status: string }[]>(keys.workOrders);
+    expect(orders.map((order) => order.id).slice(0, 1)).toEqual(["51000001"]);
+    expect(new Set(orders.map((order) => order.type))).toEqual(new Set(["PRE", "COR", "OVH", "GAR", "REP", "ESPERA"]));
+    expect(new Set(orders.map((order) => order.status)))
+      .toEqual(new Set(["Sin asignar", "Asignada", "En ejecución", "Cierre provisorio", "Cerrada"]));
+    expect(new Set(orders.map((order) => order.id)).size).toBe(orders.length);
+    expect(read<{ id: string; status: string }[]>(keys.purchaseOrders).map((order) => order.status))
+      .toEqual(expect.arrayContaining(["Pendiente aprobación", "Aprobada", "Rechazada", "Recepcionada"]));
     expect(read<{ id: string }[]>(keys.purchaseRequests)[0].id).toBe("21000001");
     const client = read<{ contracts: { code: string; startDate?: string; endDate?: string; wbs: { code: string }[] }[] }[]>(keys.clients)
       .flatMap((item) => item.contracts).find((item) => item.code === "CT1234");
@@ -40,10 +45,21 @@ describe("bootstrapStorage + seedDemoData", () => {
 
   test("contadores coherentes: el siguiente número continúa la serie", () => {
     bootstrapStorage();
-    expect(nextDocNumber("61")).toBe("61000002");
-    expect(nextDocNumber("31")).toBe("31000003");
-    expect(nextDocNumber("21")).toBe("21000002");
-    expect(nextDocNumber("13")).toBe("13000002");
+    expect(nextDocNumber("61")).toBe("61000005");
+    expect(nextDocNumber("31")).toBe("31000007");
+    expect(nextDocNumber("21")).toBe("21000008");
+    expect(nextDocNumber("13")).toBe("13000003");
+    expect(nextDocNumber("91")).toBe("91000002");
+    expect(nextDocNumber("32")).toBe("32000003");
+  });
+
+  test("código de contrato y WBS únicos en todo el seed", () => {
+    bootstrapStorage();
+    const contracts = read<{ contracts: { code: string; wbs: { code: string }[] }[] }[]>(keys.clients).flatMap((item) => item.contracts);
+    expect(contracts.length).toBeGreaterThanOrEqual(2);
+    const wbs = contracts.flatMap((item) => item.wbs.map((element) => element.code));
+    expect(new Set(wbs).size).toBe(wbs.length);
+    expect(new Set(contracts.map((item) => item.code)).size).toBe(contracts.length);
   });
 
   test("no vuelve a sembrar si el esquema ya está vigente", () => {
