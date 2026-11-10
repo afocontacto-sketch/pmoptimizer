@@ -8,7 +8,6 @@ import { printDocument } from "../components/print/printDocument";
 import { purchaseOrderDoc } from "../components/print/templates/purchaseOrderDoc";
 import { quoteComparisonDoc } from "../components/print/templates/quoteComparisonDoc";
 import { readPlannedCalls } from "./maintenanceData";
-import type { FormEvent } from "react";
 import {
   Alert,
   Button,
@@ -25,21 +24,25 @@ import {
   TableCell,
   TableHead,
   TableRow,
+  Tab,
+  Tabs,
   TextField,
   Typography,
 } from "@mui/material";
+import SuppliersTab from "./purchasing/SuppliersTab";
+import { migrateSuppliers, paymentTermLabel, paymentTermWarning } from "../data/suppliers";
+import type { Supplier } from "../data/suppliers";
 import { CheckCircleOutlined, Print, ShoppingCart, CompareArrows } from "@mui/icons-material";
 import {
   makeSupplyId,
   purchaseOrdersStorageKey,
   purchaseRequestsStorageKey,
   readStoredList,
-  suppliersStorageKey,
   quotationsStorageKey,
   requestCostAssignment,
   decidePurchaseOrder,
 } from "./supplyData";
-import type { PurchaseOrder, PurchaseQuote, PurchaseRequest, SupplierMaster, AwardHistory } from "./supplyData";
+import type { PurchaseOrder, PurchaseQuote, PurchaseRequest, AwardHistory } from "./supplyData";
 
 type QuoteDraft = { supplier: string; unitCost: string; expectedDate: string };
 const emptyQuote = (needDate: string): QuoteDraft => ({ supplier: "", unitCost: "", expectedDate: needDate });
@@ -53,21 +56,11 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
     readStoredList<PurchaseRequest>(purchaseRequestsStorageKey));
   const [orders, setOrders] = useState<PurchaseOrder[]>(() =>
     readStoredList<PurchaseOrder>(purchaseOrdersStorageKey));
-  const [suppliers, setSuppliers] = useState<SupplierMaster[]>(() => {
-    const saved = readStoredList<SupplierMaster>(suppliersStorageKey);
-    const historicalNames = [
-      ...orders.map((order) => order.supplier),
-      ...requests.flatMap((request) => request.quotes?.map((quote) => quote.supplier) ?? []),
-    ];
-    const names = [...new Set([...saved.map((supplier) => supplier.name), ...historicalNames].filter(Boolean))];
-    return names.map((name) => saved.find((supplier) => supplier.name === name) ?? {
-      id: makeSupplyId("PROV"),
-      name,
-    });
-  });
+  const [suppliers, setSuppliers] = useState<Supplier[]>(() => migrateSuppliers());
+  const activeSuppliers = suppliers.filter((supplier) => supplier.active);
+  const [tab, setTab] = useState(0);
   const [awardHistory, setAwardHistory] = useState<AwardHistory[]>(() =>
     readStoredList<AwardHistory>(quotationsStorageKey));
-  const [supplierName, setSupplierName] = useState("");
   const [drafts, setDrafts] = useState<Record<string, QuoteDraft[]>>({});
   const [selectedQuotes, setSelectedQuotes] = useState<Record<string, string>>({});
   const [manualWbs, setManualWbs] = useState<Record<string, string>>({});
@@ -85,27 +78,7 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
     return requestCostAssignment(request, plannedCalls) ?? (manual?.[1] ? { contract: manual[0], wbs: manual[1] } : null);
   };
 
-  const addSupplier = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!canQuote) {
-      setError("Solo Compras puede administrar el maestro de proveedores.");
-      return;
-    }
-    const name = supplierName.trim();
-    if (!name || suppliers.some((supplier) => supplier.name.toLowerCase() === name.toLowerCase())) {
-      setError("Ingresa un nombre de proveedor único para guardarlo en el maestro.");
-      return;
-    }
-    const next = [...suppliers, { id: makeSupplyId("PROV"), name }];
-    if (!writeJson(suppliersStorageKey, next)) {
-      setError("No se pudo guardar el proveedor en este navegador.");
-      return;
-    }
-    setSuppliers(next);
-    setSupplierName("");
-    setError("");
-    setMessage(`Proveedor ${name} agregado al maestro.`);
-  };
+  const canSeeSuppliers = can(role, "supplier.view");
 
   const printDoc = (template: ReturnType<typeof purchaseOrderDoc>) => {
     printDocument({ ...template, user }).catch((printError: unknown) => {
@@ -139,6 +112,11 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
       setError("Solo Compras puede emitir órdenes de compra.");
       return;
     }
+    const supplier = suppliers.find((item) => item.name === quote.supplier);
+    if (supplier && !supplier.active) {
+      setError(`${supplier.name} está inactivo; no se puede emitir una OC a este proveedor.`);
+      return;
+    }
     const assignment = assignmentOf(request);
     if (!assignment) {
       setComparatorModal(null);
@@ -170,6 +148,8 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
       selectedQuoteId: quote.id,
       winningQuoteId: quote.id,
       status: "Pendiente aprobación",
+      paymentTermDays: supplier?.paymentTerm.days,
+      paymentTermLabel: supplier ? paymentTermLabel(supplier.paymentTerm) : undefined,
     };
 
     const nextOrders = [...orders, order];
@@ -211,7 +191,7 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
 
     if (updateData(nextRequests, nextOrders, nextAwardHistory)) {
       setComparatorModal(null);
-      setMessage(`${orderId} creada. Cotización adjudicada a ${quote.supplier} · ${money(quote.unitCost)} c/u.`);
+      setMessage(`${orderId} creada. Cotización adjudicada a ${quote.supplier} · ${money(quote.unitCost)} c/u${order.paymentTermLabel ? ` · plazo de pago ${order.paymentTermLabel}` : ""}.`);
     }
   };
 
@@ -246,10 +226,14 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
       return;
     }
     const entries = drafts[request.id] ?? [];
-    const suppliers = entries.map((quote) => quote.supplier.trim().toLowerCase());
+    const names = entries.map((quote) => quote.supplier.trim().toLowerCase());
+    if (names.some((name) => suppliers.some((item) => !item.active && item.name.toLowerCase() === name))) {
+      setError("Hay un proveedor inactivo en el comparativo; reemplázalo por uno activo.");
+      return;
+    }
     if (entries.length !== 3 || entries.some((quote) => !quote.supplier.trim() ||
       !Number.isFinite(Number(quote.unitCost)) || Number(quote.unitCost) <= 0 ||
-      !/^\d{4}-\d{2}-\d{2}$/.test(quote.expectedDate)) || new Set(suppliers).size !== 3) {
+      !/^\d{4}-\d{2}-\d{2}$/.test(quote.expectedDate)) || new Set(names).size !== 3) {
       setError(`Registra tres proveedores distintos, cada uno con precio mayor a cero y fecha válida para ${request.id}.`);
       return;
     }
@@ -277,6 +261,13 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
       </div>
       {message && <Alert severity="success">{message}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
+      {canSeeSuppliers && (
+        <Tabs value={tab} onChange={(_, value: number) => setTab(value)}>
+          <Tab label="Compras" /><Tab label="Proveedores" />
+        </Tabs>
+      )}
+      {tab === 1 && canSeeSuppliers && <SuppliersTab role={role} user={user} suppliers={suppliers} onChange={setSuppliers} />}
+      {(tab === 0 || !canSeeSuppliers) && <>
       {approvalOnly && (
         <Paper sx={{ p: 3 }}>
           <Typography variant="h6" sx={{ mb: 2 }}>Órdenes pendientes de aprobación</Typography>
@@ -300,17 +291,8 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
             )}
         </Paper>
       )}
-      {canQuote && (
-        <Paper component="form" onSubmit={addSupplier} sx={{ p: 2 }}>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" } }}>
-            <Typography variant="subtitle1" sx={{ fontWeight: 700, flexGrow: 1 }}>Maestro de proveedores</Typography>
-            <TextField size="small" label="Nombre del proveedor" value={supplierName} onChange={(event) => setSupplierName(event.target.value)} required />
-            <Button type="submit" variant="outlined">Agregar proveedor</Button>
-          </Stack>
-          <Typography variant="caption" color="text.secondary">
-            {suppliers.length ? `${suppliers.length} proveedores disponibles para cotizaciones y facturas.` : "Agrega proveedores aquí antes de registrar cotizaciones."}
-          </Typography>
-        </Paper>
+      {canQuote && activeSuppliers.length === 0 && (
+        <Alert severity="info">No hay proveedores activos. Créalos en la pestaña Proveedores antes de cotizar.</Alert>
       )}
       {!approvalOnly && <Paper sx={{ p: 3 }}>
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 2 }}>
@@ -365,7 +347,7 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
                               next[index] = { ...next[index], supplier: event.target.value };
                               return { ...current, [request.id]: next };
                             })}>
-                              {suppliers.map((supplier) => <MenuItem key={supplier.id} value={supplier.name}>{supplier.name}</MenuItem>)}
+                              {activeSuppliers.map((supplier) => <MenuItem key={supplier.id} value={supplier.name}>{supplier.name}</MenuItem>)}
                             </TextField>
                             <TextField size="small" label="Precio unit. CLP" type="number" value={quote.unitCost} onChange={(event) => setDrafts((current) => {
                               const next = [...(current[request.id] ?? quoteDrafts)];
@@ -410,13 +392,14 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
         <Typography variant="h6" sx={{ mb: 2 }}>Órdenes de compra</Typography>
         {orders.length === 0 ? <Typography color="text.secondary">Las OC cotizadas aparecerán aquí.</Typography> : (
           <Table size="small">
-            <TableHead><TableRow><TableCell>OC</TableCell><TableCell>Solicitud</TableCell><TableCell>Proveedor</TableCell><TableCell>Material</TableCell><TableCell align="right">Total</TableCell><TableCell>Entrega</TableCell><TableCell>Estado / aprobación</TableCell><TableCell>Documento</TableCell></TableRow></TableHead>
+            <TableHead><TableRow><TableCell>OC</TableCell><TableCell>Solicitud</TableCell><TableCell>Proveedor</TableCell><TableCell>Material</TableCell><TableCell align="right">Total</TableCell><TableCell>Entrega</TableCell><TableCell>Plazo de pago</TableCell><TableCell>Estado / aprobación</TableCell><TableCell>Documento</TableCell></TableRow></TableHead>
             <TableBody>{orders.map((order) => (
               <TableRow key={order.id}>
                 <TableCell>{order.id}</TableCell><TableCell>{order.requestId}</TableCell><TableCell>{order.supplier}</TableCell>
                 <TableCell>{order.materialCode} · {order.materialName}</TableCell>
                 <TableCell align="right">{money(order.quantity * order.unitCost)}</TableCell>
                 <TableCell>{order.expectedDate}</TableCell>
+                <TableCell>{order.paymentTermLabel ?? "—"}</TableCell>
                 <TableCell>{order.status}{order.approvedBy ? ` · ${order.approvedBy}` : ""}<Typography variant="caption" sx={{ display: "block" }}>{order.wbs ?? ""}</Typography></TableCell>
                 <TableCell><Button size="small" startIcon={<Print />} onClick={() => printDoc(purchaseOrderDoc(order))}>Imprimir</Button></TableCell>
               </TableRow>
@@ -424,7 +407,8 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
           </Table>
         )}
       </Paper>
-      {comparatorModal && <QuotationComparator request={comparatorModal} onClose={() => setComparatorModal(null)} onAward={awardQuote} onPrint={() => printDoc(quoteComparisonDoc(comparatorModal))} awardHistory={awardHistory} />}
+      </>}
+      {comparatorModal && <QuotationComparator suppliers={suppliers} request={comparatorModal} onClose={() => setComparatorModal(null)} onAward={awardQuote} onPrint={() => printDoc(quoteComparisonDoc(comparatorModal))} awardHistory={awardHistory} />}
     </Stack>
   );
 }
@@ -435,7 +419,9 @@ function QuotationComparator({
   onAward,
   onPrint,
   awardHistory,
+  suppliers,
 }: {
+  suppliers: Supplier[];
   request: PurchaseRequest;
   onPrint: () => void;
   onClose: () => void;
@@ -478,6 +464,7 @@ function QuotationComparator({
                 <TableCell align="right" sx={{ fontWeight: 700 }}>Precio unitario</TableCell>
                 <TableCell align="right" sx={{ fontWeight: 700 }}>Total</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>Plazo de entrega</TableCell>
+                <TableCell sx={{ fontWeight: 700 }}>Plazo de pago</TableCell>
                 <TableCell sx={{ fontWeight: 700 }}>Estado</TableCell>
                 <TableCell align="center" sx={{ fontWeight: 700 }}>Acción</TableCell>
               </TableRow>
@@ -507,6 +494,13 @@ function QuotationComparator({
                     </TableCell>
                     <TableCell>
                       {quote.expectedDate}
+                    </TableCell>
+                    <TableCell>
+                      {(() => {
+                        const term = suppliers.find((item) => item.name === quote.supplier)?.paymentTerm;
+                        if (!term) return "—";
+                        return <>{paymentTermLabel(term)}{paymentTermWarning(term.days) && <Chip size="small" color="warning" sx={{ ml: 1 }} label="Ley 21.131" />}</>;
+                      })()}
                     </TableCell>
                     <TableCell>
                       <Chip

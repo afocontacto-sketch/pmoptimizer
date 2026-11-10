@@ -14,6 +14,7 @@ export type Action =
   | "budget.approve" | "eac.closeMonth"
   | "invoice.edit" | "accounting.edit"
   | "payroll.edit" | "payroll.recalculate" | "payroll.params" | "hr.edit"
+  | "supplier.edit" | "supplier.view"
   | "client.edit" | "backup.manage";
 
 const ING: Role = "Ingeniería e Industrial";
@@ -55,6 +56,8 @@ export const permissions: Record<Action, readonly Role[]> = {
   "payroll.recalculate": ["Contabilidad"],
   "payroll.params": ["Contabilidad"],
   "hr.edit": ["Contabilidad"],
+  "supplier.edit": ["Compras"],
+  "supplier.view": ["Compras", "Contabilidad"], // Contabilidad: solo lectura (cuenta y plazo)
   "client.edit": [],
   "backup.manage": [],
 };

@@ -14,6 +14,7 @@ export function purchaseOrderDoc(order: PurchaseOrder): PrintTemplate {
     meta: [
       ["Solicitud de pedido", order.requestId], ["Entrega estimada", order.expectedDate], ["Estado", order.status],
       ["Contrato", order.contract ?? "—"], ["WBS", order.wbs ?? "—"], ["Aprobada por", order.approvedBy ?? "—"],
+      ["Plazo de pago", order.paymentTermLabel ?? "—"],
     ],
     bodyHtml: htmlTable(
       ["Código", "Descripción", "Cantidad", "Unidad", "Precio unitario", "Total"],

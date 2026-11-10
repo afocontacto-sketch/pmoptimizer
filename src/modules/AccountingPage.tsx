@@ -50,6 +50,7 @@ import type {
 import { printDocument } from "../components/print/printDocument";
 import { invoiceDoc } from "../components/print/templates/invoiceDoc";
 import { purchaseInvoiceWbsError, purchaseOrdersStorageKey, suppliersStorageKey } from "./supplyData";
+import { dueDateFromTerm, orderPaymentDays, readSuppliers } from "../data/suppliers";
 import type { PurchaseOrder, SupplierMaster } from "./supplyData";
 import { payrollRunsStorageKey } from "./HumanResourcesPage";
 
@@ -295,6 +296,17 @@ export default function AccountingPage({ role }: { role: string }) {
   const clients = savedClients.length ? savedClients : fallbackClients;
   const clientNames = [...new Set(clients.map((client) => client.name).filter(Boolean))];
   const savedSupplierNames = readFinanceList<SupplierMaster>(suppliersStorageKey).map((supplier) => supplier.name);
+  // Factura ligada a OC: vencimiento = fecha de factura + plazo de pago de la OC (editable después).
+  const linkedOrder = (current: InvoiceDraft) => current.kind === "Compra" ? purchaseOrders.find((order) => order.id === current.purchaseOrder) : undefined;
+  const linkedTermDays = (current: InvoiceDraft) => {
+    const order = linkedOrder(current);
+    return order ? orderPaymentDays(order, readSuppliers()) : null;
+  };
+  const withTermDueDate = (current: InvoiceDraft): InvoiceDraft => {
+    const days = linkedTermDays(current);
+    return days === null || !validDate(current.issueDate) ? current : { ...current, dueDate: dueDateFromTerm(current.issueDate, days) };
+  };
+  const draftTermDays = linkedTermDays(draft);
   const quotedSupplierNames = readFinanceList<{ quotes?: { supplier: string }[] }>(keys.purchaseRequests)
     .flatMap((request) => request.quotes?.map((quote) => quote.supplier) ?? []);
   const supplierNames = [...new Set([...savedSupplierNames, ...purchaseOrders.map((order) => order.supplier), ...quotedSupplierNames].filter(Boolean))];
@@ -706,10 +718,10 @@ export default function AccountingPage({ role }: { role: string }) {
                     </TextField>
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                    <TextField label="Fecha de emisión" type="date" value={draft.issueDate} onChange={(event) => setDraft((current) => ({ ...current, issueDate: event.target.value }))} slotProps={{ inputLabel: { shrink: true } }} required fullWidth />
+                    <TextField label="Fecha de emisión" type="date" value={draft.issueDate} onChange={(event) => setDraft((current) => withTermDueDate({ ...current, issueDate: event.target.value }))} slotProps={{ inputLabel: { shrink: true } }} required fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                    <TextField label="Fecha de vencimiento" type="date" value={draft.dueDate} onChange={(event) => setDraft((current) => ({ ...current, dueDate: event.target.value }))} slotProps={{ inputLabel: { shrink: true } }} required fullWidth />
+                    <TextField label="Fecha de vencimiento" type="date" value={draft.dueDate} onChange={(event) => setDraft((current) => ({ ...current, dueDate: event.target.value }))} slotProps={{ inputLabel: { shrink: true } }} helperText={draftTermDays !== null ? `Emisión + plazo de la OC (${draftTermDays === 0 ? "contado" : `${draftTermDays} días`})` : undefined} required fullWidth />
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 3 }}>
                     <TextField label={`Tipo de cambio (${draft.currency} a CLP)`} type="number" value={draft.exchangeRate} onChange={(event) => setDraft((current) => ({ ...current, exchangeRate: event.target.value }))} slotProps={{ htmlInput: { min: 0.0001, step: "any" } }} helperText="CLP por 1 unidad de moneda" required fullWidth />
@@ -724,7 +736,7 @@ export default function AccountingPage({ role }: { role: string }) {
                   </Grid>
                   {tab === 1 && (
                     <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                      <TextField select label="Orden de compra vinculada (opcional)" value={draft.purchaseOrder} onChange={(event) => setDraft((current) => ({ ...current, purchaseOrder: event.target.value }))} fullWidth>
+                      <TextField select label="Orden de compra vinculada (opcional)" value={draft.purchaseOrder} onChange={(event) => setDraft((current) => withTermDueDate({ ...current, purchaseOrder: event.target.value }))} fullWidth>
                         <MenuItem value="">Sin OC</MenuItem>
                         {purchaseOrders.map((order) => <MenuItem key={order.id} value={order.id}>{order.id} · {order.supplier} · {order.materialCode}</MenuItem>)}
                       </TextField>

@@ -231,11 +231,34 @@ export function seedDemoData(now: Date = new Date()): SeedResult {
 
   const quote = (id: string, supplier: string, unitCost: number, expectedDate: string, status: QuotationStatus): PurchaseQuote =>
     ({ id, supplier, unitCost, expectedDate, status, paymentTerms: "30 días" });
-  const suppliers: SupplierMaster[] = ["Proveedor Demo", "Rodamientos del Pacífico", "Eléctrica Santiago Ltda.", "Lubricantes Andes S.A."]
-    .map((name, index) => ({ id: `PROV-DEMO-${index + 1}`, name }));
+  // Proveedores ficticios (RUT con dígito verificador válido, datos inventados).
+  const supplierDemo = (n: number, name: string, tradeName: string, rut: string, activity: string, address: SupplierMaster["address"],
+    contact: [string, string, string, string], bank: [string, SupplierMaster["bank"]["type"], string], days: number, condition: string, categories: string[]): SupplierMaster => ({
+    id: `PROV-DEMO-${n}`, name, tradeName, rut, activity, address, active: true, categories,
+    contacts: [{ name: contact[0], role: contact[1], email: contact[2], phone: contact[3], primary: true }],
+    bank: { bankCode: bank[0], type: bank[1], number: bank[2], holder: name, holderRut: rut, paymentEmail: contact[2] },
+    paymentTerm: { mode: days === 0 ? "Contado" : String(days) as SupplierMaster["paymentTerm"]["mode"], days, condition },
+  });
+  const suppliers: SupplierMaster[] = [
+    supplierDemo(1, "Proveedor Demo", "Demo Industrial", "76.123.450-1", "Venta de insumos industriales",
+      { street: "Av. Ficticia 1234", commune: "Quilicura", city: "Santiago", region: "Metropolitana de Santiago", country: "Chile" },
+      ["Marta Soto", "Ejecutiva de ventas", "msoto@demo-industrial.example", "+56 2 2000 0001"], ["001", "Corriente", "100200301"], 30, "Pago contra factura recibida", ["Insumos", "Eléctrico"]),
+    supplierDemo(2, "Rodamientos del Pacífico", "RodaPac", "77.234.560-7", "Importación y venta de rodamientos",
+      { street: "Calle Ejemplo 450", commune: "Valparaíso", city: "Valparaíso", region: "Valparaíso", country: "Chile" },
+      ["Luis Araya", "Gerente comercial", "laraya@rodapac.example", "+56 32 200 0002"], ["012", "Vista/RUT", "77234560"], 45, "Acuerdo escrito vigente por 45 días", ["Mecánico", "Rodamientos"]),
+    supplierDemo(3, "Eléctrica Santiago Ltda.", "ElecSantiago", "76.345.670-6", "Distribución de material eléctrico",
+      { street: "Pasaje Prueba 88", commune: "Maipú", city: "Santiago", region: "Metropolitana de Santiago", country: "Chile" },
+      ["Paula Reyes", "Jefa de cuentas", "preyes@elecsantiago.example", "+56 2 2000 0003"], ["016", "Corriente", "34500678"], 15, "Descuento 1% por pago anticipado", ["Eléctrico"]),
+    supplierDemo(4, "Lubricantes Andes S.A.", "LubriAndes", "96.456.780-8", "Fabricación y venta de lubricantes",
+      { street: "Camino Industrial 2500", commune: "Concepción", city: "Concepción", region: "Biobío", country: "Chile" },
+      ["Diego Fuentes", "Ejecutivo corporativo", "dfuentes@lubriandes.example", "+56 41 200 0004"], ["037", "Ahorro", "55501234"], 60, "Acuerdo escrito; pago a 60 días fecha factura", ["Lubricantes", "Filtros"]),
+  ];
   const order = (id: string, requestId: string, code: string, name: string, unit: string, quantity: number, supplier: string, unitCost: number,
-    expectedDate: string, contract: string, wbs: string, status: PurchaseOrder["status"], extra: Partial<PurchaseOrder> = {}): PurchaseOrder =>
-    ({ id, requestId, materialCode: code, materialName: name, unit, quantity, supplier, unitCost, expectedDate, contract, wbs, status, ...extra });
+    expectedDate: string, contract: string, wbs: string, status: PurchaseOrder["status"], extra: Partial<PurchaseOrder> = {}): PurchaseOrder => {
+    const term = suppliers.find((item) => item.name === supplier)?.paymentTerm;
+    return { id, requestId, materialCode: code, materialName: name, unit, quantity, supplier, unitCost, expectedDate, contract, wbs, status,
+      paymentTermDays: term?.days, paymentTermLabel: term && (term.days === 0 ? "Contado" : `${term.days} días`), ...extra };
+  };
   const purchaseOrders: PurchaseOrder[] = [
     order(po1, sp1, "MAT-114", "Cinta aislante 3M", "rollo", 12, "Proveedor Demo", 3500, plus(4), ctFiat, "CT1234-CL-B2N4-COR", "Aprobada", { approvedBy: "PM Proyecto" }),
     order(po2, sp1, "MAT-422", "Rodamiento SKF 6205", "unidad", 8, "Proveedor Demo", 7800, plus(6), ctFiat, "CT1234-CL-B2N4-COR", "Aprobada", { approvedBy: "PM Proyecto" }),

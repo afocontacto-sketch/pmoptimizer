@@ -1,16 +1,14 @@
 import { keys } from "../data/keys";
 import { fail, ok } from "../data/result";
 import type { Result } from "../data/result";
+import type { Supplier } from "../data/suppliers";
 
 export const purchaseRequestsStorageKey = keys.purchaseRequests;
 export const purchaseOrdersStorageKey = keys.purchaseOrders;
 export const suppliersStorageKey = keys.suppliers;
 export const quotationsStorageKey = keys.quotations;
 
-export type SupplierMaster = {
-  id: string;
-  name: string;
-};
+export type SupplierMaster = Supplier;
 
 export type PurchaseRequestStatus =
   | "Pendiente cotización"
@@ -69,6 +67,8 @@ export type PurchaseOrder = {
   approvedBy?: string;
   selectedQuoteId?: string;
   winningQuoteId?: string;
+  paymentTermDays?: number; // plazo del proveedor copiado al crear la OC
+  paymentTermLabel?: string;
 };
 
 export type AwardHistory = {

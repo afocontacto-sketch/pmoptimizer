@@ -1,7 +1,7 @@
 import { keys } from "./keys";
 import { updateJson } from "./storage";
 
-export type AuditEntity = "material" | "order" | "payroll" | "budget" | "eac" | "transfer" | "employee";
+export type AuditEntity = "material" | "order" | "payroll" | "budget" | "eac" | "transfer" | "employee" | "supplier";
 
 export type AuditRecord = {
   id: string;
@@ -14,6 +14,7 @@ export type AuditRecord = {
   before?: unknown;
   after?: unknown;
   reason?: string;
+  sensitive?: boolean;
 };
 
 export function appendAudit(record: Omit<AuditRecord, "id" | "date">): boolean {
