@@ -17,6 +17,7 @@ import {
 import { Link } from "react-router-dom";
 import { readPlannedCalls, routeStorageKey } from "./maintenanceData";
 import type { RouteTemplate } from "./maintenanceData";
+import { orderTimeTotals, readTimeEntries } from "../data/workOrders";
 import { purchaseOrdersStorageKey, readStoredList } from "./supplyData";
 import type { PurchaseOrder } from "./supplyData";
 
@@ -28,8 +29,6 @@ type WorkOrder = {
   equipment: string;
   type: string;
   status: string;
-  elapsedSeconds: number;
-  hourlyRate: number;
   consumedMaterials: { quantity: number; unitCost?: number }[];
 };
 type StockBin = {
@@ -64,6 +63,8 @@ export default function ProjectManagement({ role = "Supervisor" }: { role?: stri
   const [calls] = useState(() => readPlannedCalls());
   const [routes] = useState(() => readStoredList<RouteTemplate>(routeStorageKey));
   const [orders] = useState(() => readStoredList<WorkOrder>(workOrdersStorageKey));
+  const [timeEntries] = useState(() => readTimeEntries());
+  const [nowMs] = useState(() => Date.now());
   const [stock] = useState(() => {
     const stored = readStoredList<StockBin>(stockStorageKey);
     return stored.length ? stored : demoStock;
@@ -79,7 +80,7 @@ export default function ProjectManagement({ role = "Supervisor" }: { role?: stri
     return !order || order.status !== "Cerrada";
   });
   const actualCost = completed.reduce((total, order) => total +
-    order.elapsedSeconds / 3600 * order.hourlyRate +
+    orderTimeTotals(order.id, timeEntries, nowMs).laborCost +
     order.consumedMaterials.reduce((sum, item) => sum + item.quantity * (item.unitCost ?? 0), 0), 0);
   const pmMonthlyTotals = useMemo(() => {
     const totals = new Map<string, { contract: string; year: string; month: string; calls: number; completed: number; cost: number }>();
@@ -92,13 +93,13 @@ export default function ProjectManagement({ role = "Supervisor" }: { role?: stri
       const order = orders.find((item) => item.plannedCallId === call.id);
       if (order?.status === "Cerrada") {
         current.completed += 1;
-        current.cost += order.elapsedSeconds / 3600 * order.hourlyRate +
+        current.cost += orderTimeTotals(order.id, timeEntries, nowMs).laborCost +
           order.consumedMaterials.reduce((sum, item) => sum + item.quantity * (item.unitCost ?? 0), 0);
       }
       totals.set(key, current);
     }
     return [...totals.values()].sort((a, b) => a.contract.localeCompare(b.contract) || a.month.localeCompare(b.month));
-  }, [calls, orders]);
+  }, [calls, orders, timeEntries, nowMs]);
 
   const materialAlerts = useMemo(() => {
     const demands = calls.flatMap((call) => {
@@ -216,7 +217,7 @@ export default function ProjectManagement({ role = "Supervisor" }: { role?: stri
             <TableBody>{calls.map((call) => {
               const order = orders.find((item) => item.plannedCallId === call.id);
               const orderCost = order
-                ? order.elapsedSeconds / 3600 * order.hourlyRate +
+                ? orderTimeTotals(order.id, timeEntries, nowMs).laborCost +
                   order.consumedMaterials.reduce((sum, item) => sum + item.quantity * (item.unitCost ?? 0), 0)
                 : 0;
               return (

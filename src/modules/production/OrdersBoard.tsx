@@ -3,7 +3,6 @@ import {
   Alert,
   Box,
   Button,
-  MenuItem,
   Paper,
   Stack,
   Tab,
@@ -13,10 +12,9 @@ import {
   TableHead,
   TableRow,
   Tabs,
-  TextField,
   Typography,
 } from "@mui/material";
-import { Download } from "@mui/icons-material";
+import { Download, Print } from "@mui/icons-material";
 import { downloadTemplate } from "../../data/csv";
 import { durationLabel, money } from "../../data/format";
 import { typeLabels } from "../../data/workOrders";
@@ -26,8 +24,8 @@ import type { ProductionCtx } from "./useProductionCtx";
 
 export default function OrdersBoard({ ctx }: { ctx: ProductionCtx }) {
   const {
-    role, stock, isSupervisor, canCloseOrders, assignableTeam, openOrders, closedOrders, assignmentDrafts,
-    setAssignmentDrafts, assignOrderToTeamMember, supervisorClose, setReopenOrderId, setReopenModalOpen, setReopenReason,
+    role, stock, isSupervisor, canCloseOrders, openOrders, closedOrders,
+    canReopenOrders, printOrder, supervisorClose, setReopenOrderId, setReopenModalOpen, setReopenReason,
   } = ctx;
   const [operationsTab, setOperationsTab] = useState(0);
   const exportOrderTemplate = () => downloadTemplate("plantilla_ordenes_trabajo.csv",
@@ -86,23 +84,15 @@ export default function OrdersBoard({ ctx }: { ctx: ProductionCtx }) {
                 {!isSupervisor && order.qualityApproved && <Typography variant="caption" color="success.main">Calidad OK · {order.qualityApprovedBy}</Typography>}
               </TableCell>
               <TableCell>
-                {order.assignees[0]?.name || "Sin asignar"}
-                {!isSupervisor && <Typography sx={{ display: "block" }} variant="caption" color="text.secondary">{money(order.hourlyRate)}/h</Typography>}
+                {order.assignees.map((assignee) => assignee.name).join(", ") || "Sin asignar"}
               </TableCell>
-              {!isSupervisor && <><TableCell>{order.projectedHours.toFixed(1)} h / {durationLabel(order.currentSeconds)}</TableCell><TableCell align="right">{money(allocatedCost(order, stock, order.currentSeconds))}</TableCell></>}
+              {!isSupervisor && <><TableCell>{order.projectedHours.toFixed(1)} h / {durationLabel(order.currentSeconds)}</TableCell><TableCell align="right">{money(allocatedCost(order, stock))}</TableCell></>}
               <TableCell>
                 <Stack direction="row" sx={{ flexWrap: "wrap", gap: 1 }}>
-                  {isSupervisor && assignableTeam.length > 0 && order.status === "Asignada" && (
-                    <>
-                      <TextField select size="small" label="Asignar a" value={assignmentDrafts[order.id] ?? assignableTeam.find((employee) => employee.name === order.assignees[0]?.name)?.id ?? assignableTeam[0].id} onChange={(event) => setAssignmentDrafts((current) => ({ ...current, [order.id]: event.target.value }))}>
-                        {assignableTeam.map((employee) => <MenuItem key={employee.id} value={employee.id}>{employee.name}</MenuItem>)}
-                      </TextField>
-                      <Button size="small" variant="contained" onClick={() => assignOrderToTeamMember(order)}>Asignar</Button>
-                    </>
-                  )}
                   {canCloseOrders && order.status === "Cierre provisorio" && <Button size="small" variant="contained" color="success" onClick={() => supervisorClose(order.id)}>Cerrar OT</Button>}
+                  <Button size="small" startIcon={<Print />} onClick={() => printOrder(order)}>Imprimir OT</Button>
                 </Stack>
-                {!isSupervisor && order.supervisorClosedBy && <Typography variant="caption">Cerró: {order.supervisorClosedBy}</Typography>}
+                {!isSupervisor && order.closedBy && <Typography variant="caption">Cerró: {order.closedBy}</Typography>}
               </TableCell>
             </TableRow>
           ))}</TableBody>
@@ -123,8 +113,8 @@ export default function OrdersBoard({ ctx }: { ctx: ProductionCtx }) {
                   <TableCell>{order.id}</TableCell>
                   <TableCell>{order.equipment}<Typography variant="caption" sx={{ display: "block" }}>{order.description}</Typography></TableCell>
                   <TableCell>{order.contract}<Typography variant="caption" sx={{ display: "block" }}>{order.wbs}</Typography></TableCell>
-                  <TableCell>{order.assignees[0]?.name}</TableCell>
-                  <TableCell>{money(allocatedCost(order, stock, order.currentSeconds))}</TableCell>
+                  <TableCell>{order.assignees.map((assignee) => assignee.name).join(", ")}</TableCell>
+                  <TableCell>{money(allocatedCost(order, stock))}</TableCell>
                   <TableCell>{order.closedBy ?? "—"}</TableCell>
                   <TableCell>{order.closedAt ? new Intl.DateTimeFormat("es-CL", { dateStyle: "short", timeStyle: "short" }).format(new Date(order.closedAt)) : "—"}</TableCell>
                   <TableCell>
@@ -140,7 +130,8 @@ export default function OrdersBoard({ ctx }: { ctx: ProductionCtx }) {
                     ) : "—"}
                   </TableCell>
                   <TableCell>
-                    {isSupervisor && (
+                    <Button size="small" startIcon={<Print />} onClick={() => printOrder(order)}>Imprimir OT</Button>
+                    {canReopenOrders && (
                       <Button size="small" variant="outlined" onClick={() => {
                         setReopenOrderId(order.id);
                         setReopenModalOpen(true);

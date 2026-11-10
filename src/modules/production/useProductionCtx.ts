@@ -3,15 +3,18 @@ import { can } from "../../app/permissions";
 import type { Role } from "../../app/roles";
 import { useCatalog, useOperations, useSupervisorScope } from "../../hooks/useOperations";
 import type { Feedback } from "../../hooks/useOperations";
+import { printDocument } from "../../components/print/printDocument";
+import { workOrderDoc } from "../../components/print/printTemplates";
+import { assignOrder, closeOrder, reopenOrder as reopenWorkOrder } from "../../data/workOrders";
 import type { WorkOrder } from "../operationsData";
 
 // Estado y acciones comunes a las pestañas de Producción.
 export function useProductionCtx(user: string, role: Role, { setMessage, setError }: Feedback) {
-  const { orders, visibleOrders, stock, setOrders, updateOrder } = useOperations();
+  const { orders, entries, nowMs, visibleOrders, stock, setOrders, updateOrder } = useOperations();
   const { employees, technicianProfiles, supervisorEmployee, supervisorTeam, assignableTeam, supervisorCanSeeOrder } =
     useSupervisorScope(role, user);
   const { routes, plans, plannedCalls, contracts } = useCatalog();
-  const [assignmentDrafts, setAssignmentDrafts] = useState<Record<string, string>>({});
+  const [assignmentDrafts, setAssignmentDrafts] = useState<Record<string, string[]>>({});
   const [reopenModalOpen, setReopenModalOpen] = useState(false);
   const [reopenOrderId, setReopenOrderId] = useState("");
   const [reopenReason, setReopenReason] = useState("");
@@ -21,116 +24,52 @@ export function useProductionCtx(user: string, role: Role, { setMessage, setErro
   const canCreate = can(role, "order.create");
   const openOrders = visibleOrders.filter((order) => order.status !== "Cerrada" && supervisorCanSeeOrder(order));
   const closedOrders = visibleOrders.filter((order) => order.status === "Cerrada" && (isSupervisor || role === "Administrador"));
-
-  function assignOrderToTeamMember(order: WorkOrder) {
-    if (role !== "Supervisor" || !supervisorEmployee || order.status !== "Asignada") {
-      setError("Solo puedes asignar órdenes pendientes a personal de tu equipo.");
+  const assignOrderToEmployees = (orderId: string, employeeIds: string[]) => {
+    const result = assignOrder(orderId, employeeIds, { user, role }, employees);
+    if (!result.ok) {
+      setError(result.error);
       return;
     }
-    const employeeId = assignmentDrafts[order.id] ?? assignableTeam[0]?.id;
-    const employee = assignableTeam.find((item) => item.id === employeeId);
-    if (!employee) {
-      setError("Selecciona un trabajador que pertenezca a tu equipo.");
-      return;
-    }
-    const profile = technicianProfiles.find((item) => item.name === employee.name);
-    if (!profile) {
-      setError("El trabajador seleccionado no tiene un perfil técnico directo habilitado.");
-      return;
-    }
-    updateOrder(order.id, (current) => ({
-      ...current,
-      assignees: [{ employeeId: employee.id, name: employee.name }],
-      hourlyRate: profile.rate,
-      projectedLaborCost: profile.rate * current.projectedHours,
-    }));
     setError("");
-    setMessage(`${order.id} asignada a ${employee.name}.`);
-  }
+    setMessage(`${orderId} asignada a ${result.value.assignees.map((item) => item.name).join(", ") || "nadie (sin asignar)"}.`);
+  };
 
 
+  // Supervisor y Técnico no ven tarifas ni costos (misma regla que el tablero de costos).
+  const canSeeCosts = role !== "Supervisor" && role !== "Técnico";
+  const printOrder = (order: WorkOrder) => {
+    printDocument({ ...workOrderDoc(order, entries, { showCosts: canSeeCosts, nowMs }), user })
+      .catch((printError: unknown) => setError(printError instanceof Error ? printError.message : "No se pudo imprimir la OT."));
+  };
+
+// Supervisor y Técnico no ven tarifas ni costos (misma regla que el tablero de costos).  const canSeeCosts = role !== "Supervisor" && role !== "Técnico";  const printOrder = (order: WorkOrder) => {    printDocument({ ...workOrderDoc(order, entries, { showCosts: canSeeCosts, nowMs }), user })      .catch((printError: unknown) => setError(printError instanceof Error ? printError.message : "No se pudo imprimir la OT."));  };
   const supervisorClose = (orderId: string) => {
-    if (!canCloseOrders) return;
-    const order = orders.find((item) => item.id === orderId);
-    if (order?.timerStartedAt) {
-      setError("El técnico debe detener el cronómetro antes del cierre final.");
+    const result = closeOrder(orderId, { user, role });
+    if (!result.ok) {
+      setError(result.error);
       return;
     }
-    if (order?.status !== "Cierre provisorio") {
-      setError("Solo se puede cerrar una OT que esté en cierre provisorio.");
-      return;
-    }
-    if (order.type !== "ESPERA" && !order.qualityApproved) {
-      setError("Calidad debe aprobar el checklist antes del cierre final.");
-      return;
-    }
-    const previousStatus = order.status;
-    updateOrder(orderId, (item) => {
-      const now = new Date().toISOString();
-      return {
-        ...item,
-        status: "Cerrada",
-        supervisorClosedBy: user,
-        closedAt: now,
-        closedBy: user,
-        statusHistory: [
-          ...(item.statusHistory ?? []),
-          {
-            date: now,
-            previousStatus,
-            newStatus: "Cerrada",
-            user,
-          },
-        ],
-      };
-    });
     setMessage(`${orderId} cerrada por ${user}.`);
     setError("");
   };
 
   const reopenOrder = (orderId: string, reason: string) => {
-    if (!canReopenOrders) {
-      setError("Solo Supervisor o Administrador puede reabrir una OT cerrada.");
+    const result = reopenWorkOrder(orderId, reason, { user, role });
+    if (!result.ok) {
+      setError(result.error);
       return;
     }
-    if (!reason.trim()) {
-      setError("Completa el motivo de reapertura.");
-      return;
-    }
-    const order = orders.find((item) => item.id === orderId);
-    if (!order || order.status !== "Cerrada") {
-      setError("Solo se pueden reabrir órdenes en estado Cerrada.");
-      return;
-    }
-    const now = new Date().toISOString();
-    updateOrder(orderId, (order) => ({
-      ...order,
-      status: "Asignada",
-      supervisorClosedBy: null,
-      qualityApproved: false,
-      qualityApprovedBy: null,
-      statusHistory: [
-        ...(order.statusHistory ?? []),
-        {
-          date: now,
-          previousStatus: "Cerrada",
-          newStatus: "Asignada",
-          user,
-          reason: reason.trim(),
-        },
-      ],
-    }));
-    setMessage(`${orderId} reabierta por ${user} - Motivo: ${reason}`);
+    setMessage(`${orderId} reabierta por ${user} - Motivo: ${reason.trim()}`);
     setError("");
   };
 
 
   return {
-    user, role, orders, visibleOrders, stock, setOrders, updateOrder, employees, technicianProfiles,
+    user, role, orders, entries, visibleOrders, stock, setOrders, updateOrder, employees, technicianProfiles,
     supervisorEmployee, supervisorTeam, assignableTeam, supervisorCanSeeOrder, routes, plans, plannedCalls, contracts,
     setMessage, setError, assignmentDrafts, setAssignmentDrafts, reopenModalOpen, setReopenModalOpen,
     reopenOrderId, setReopenOrderId, reopenReason, setReopenReason, isSupervisor, canCloseOrders, canReopenOrders,
-    canCreate, openOrders, closedOrders, assignOrderToTeamMember, supervisorClose, reopenOrder,
+    canCreate, canSeeCosts, openOrders, closedOrders, assignOrderToEmployees, printOrder, supervisorClose, reopenOrder,
   };
 }
 

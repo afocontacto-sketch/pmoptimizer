@@ -50,3 +50,22 @@ export function bootstrapStorage(): void {
     console.warn("No se pudo inicializar el almacenamiento local.", error);
   }
 }
+
+// Ejecuta escrituras en orden; si una falla, restaura el contenido previo de las claves y devuelve false.
+export function runAtomic(storageKeys: string[], steps: Array<() => boolean>): boolean {
+  const snapshot = storageKeys.map((key) => [key, localStorage.getItem(key)] as const);
+  for (const step of steps) {
+    if (step()) continue;
+    for (const [key, raw] of snapshot) {
+      try {
+        if (raw === null) localStorage.removeItem(key);
+        else localStorage.setItem(key, raw);
+      } catch (error) {
+        console.warn(`No se pudo revertir "${key}".`, error);
+      }
+      window.dispatchEvent(new CustomEvent(STORE_EVENT, { detail: key }));
+    }
+    return false;
+  }
+  return true;
+}

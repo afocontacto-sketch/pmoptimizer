@@ -4,8 +4,8 @@ import { keys } from "../data/keys";
 import { demoContract } from "../data/contracts";
 import type { Contract } from "../data/contracts";
 import type { StockBin } from "../data/stock";
-import { readJson, STORE_EVENT, updateJson } from "../data/storage";
-import { entryDurationHours, readTimeEntries } from "../data/workOrders";
+import { readJson, runAtomic, updateJson } from "../data/storage";
+import { orderTimeTotals } from "../data/workOrders";
 import type { OrderLine, OrderType, TimeEntry, WorkOrder as BaseWorkOrder } from "../data/workOrders";
 import type { RouteTemplate } from "./maintenanceData";
 import { purchaseOrdersStorageKey, readStoredList } from "./supplyData";
@@ -36,18 +36,14 @@ export type StockMovement = {
   user: string;
 };
 
-// Campos de ejecución que el modelo de data/ aún no define (cronómetro y reservas de picking); se completan al leer.
+// Campos de ejecución que el modelo de data/ aún no define (reservas de picking, hasta E4.2); se completan al leer.
 export type RuntimeFields = {
-  hourlyRate: number;
-  elapsedSeconds: number;
-  timerStartedAt: number | null;
   reservedPicks?: ReservedPick[];
   supervisorClosedBy: string | null;
 };
 export type WorkOrder = BaseWorkOrder & RuntimeFields;
-export type TimedOrder = WorkOrder & { currentSeconds: number };
+export type TimedOrder = WorkOrder & { currentSeconds: number; laborCost: number };
 export type StockBinGroup = StockBin & { sourceBins: StockBin[] };
-export type RateLookup = (name: string, fallback: number) => number;
 
 export const qualityCheckItems = [
   "Trabajo ejecutado según hoja de ruta",
@@ -84,29 +80,27 @@ export function readContracts(): Contract[] {
   ).values()];
 }
 
-export function withRuntimeFields(
-  order: BaseWorkOrder & Partial<RuntimeFields>,
-  entries: TimeEntry[],
-  rateOf: RateLookup,
-): WorkOrder {
-  const own = entries.filter((entry) => entry.orderId === order.id);
-  const closedSeconds = own.filter((entry) => entry.end).reduce((sum, entry) => sum + entryDurationHours(entry, 0) * 3600, 0);
+export function withRuntimeFields(order: BaseWorkOrder & Partial<RuntimeFields>): WorkOrder {
   return {
     ...order,
     assignees: order.assignees ?? [],
     materials: order.materials ?? [],
-    hourlyRate: order.hourlyRate ?? own[0]?.hourlyRate ?? rateOf(order.assignees?.[0]?.name ?? "", 0),
-    elapsedSeconds: order.elapsedSeconds ?? Math.round(closedSeconds),
-    timerStartedAt: order.timerStartedAt ?? null,
     supervisorClosedBy: order.supervisorClosedBy ?? null,
   };
 }
 
-export function readOrders(rateOf: RateLookup): WorkOrder[] {
-  const entries = readTimeEntries();
+export function readOrders(): WorkOrder[] {
   return readList<BaseWorkOrder & Partial<RuntimeFields>>(keys.workOrders)
-    .map((order) => withRuntimeFields(order, entries, rateOf))
+    .map(withRuntimeFields)
     .map((order) => order.type === "ESPERA" && !order.wbs ? { ...order, wbs: "CT1234-CL-B2N4-IND" } : order);
+}
+
+// Tiempo y mano de obra por OT, derivados de timeEntries (las entradas abiertas cuentan hasta nowMs).
+export function timedOrders(orders: WorkOrder[], entries: TimeEntry[], nowMs: number): TimedOrder[] {
+  return orders.map((order) => {
+    const totals = orderTimeTotals(order.id, entries, nowMs);
+    return { ...order, currentSeconds: Math.round(totals.seconds), laborCost: totals.laborCost };
+  });
 }
 
 export function addApprovedPurchaseOrdersToTransit(bins: StockBin[], orders: PurchaseOrder[]): StockBin[] {
@@ -148,8 +142,8 @@ export function readMovements(): StockMovement[] {
 }
 
 // Escrituras: leen fresco, aplican fn, guardan y notifican (updateJson). Devuelven false si el guardado falla.
-export function writeOrders(rateOf: RateLookup, fn: (orders: WorkOrder[]) => WorkOrder[]): boolean {
-  return updateJson<WorkOrder[]>(keys.workOrders, [], () => fn(readOrders(rateOf))) !== null;
+export function writeOrders(fn: (orders: WorkOrder[]) => WorkOrder[]): boolean {
+  return updateJson<WorkOrder[]>(keys.workOrders, [], () => fn(readOrders())) !== null;
 }
 
 export function writeStock(fn: (stock: StockBin[]) => StockBin[]): boolean {
@@ -164,24 +158,7 @@ export function writePurchaseOrders(fn: (orders: PurchaseOrder[]) => PurchaseOrd
   return updateJson<PurchaseOrder[]>(purchaseOrdersStorageKey, [], fn) !== null;
 }
 
-// Ejecuta escrituras en orden; si una falla, restaura el contenido previo de las claves y devuelve false.
-export function runAtomic(storageKeys: string[], steps: Array<() => boolean>): boolean {
-  const snapshot = storageKeys.map((key) => [key, localStorage.getItem(key)] as const);
-  for (const step of steps) {
-    if (step()) continue;
-    for (const [key, raw] of snapshot) {
-      try {
-        if (raw === null) localStorage.removeItem(key);
-        else localStorage.setItem(key, raw);
-      } catch (error) {
-        console.warn(`No se pudo revertir "${key}".`, error);
-      }
-      window.dispatchEvent(new CustomEvent(STORE_EVENT, { detail: key }));
-    }
-    return false;
-  }
-  return true;
-}
+export { runAtomic };
 
 // Recepción de OC: stock primero (materializa la línea de tránsito con el saldo correcto), luego kardex y OC; todo o nada.
 export function receivePurchaseLine(source: StockBin, quantity: number, newBin: StockBin, movement: StockMovement): boolean {
@@ -232,7 +209,7 @@ export function routeLaborCost(route: RouteTemplate): number {
 }
 
 export function plannedLaborCost(order: WorkOrder): number {
-  return order.projectedLaborCost ?? order.projectedHours * order.hourlyRate;
+  return order.projectedLaborCost ?? 0;
 }
 
 export function plannedMaterialCost(item: OrderLine, fallbackUnitCost: number): number {
@@ -294,7 +271,7 @@ export function averageUnitCost(code: string, stock: StockBin[]): number {
     : 0;
 }
 
-export function allocatedCost(order: WorkOrder, stock: StockBin[], elapsedSeconds = order.elapsedSeconds): number {
+export function allocatedCost(order: TimedOrder, stock: StockBin[]): number {
   const materialCost = order.materials.reduce((sum, item) => {
     const weightedBins = stock.filter((candidate) => candidate.code === item.code && candidate.quantity > 0);
     const totalQuantity = weightedBins.reduce((total, bin) => total + bin.quantity, 0);
@@ -302,7 +279,7 @@ export function allocatedCost(order: WorkOrder, stock: StockBin[], elapsedSecond
       / Math.max(1, totalQuantity);
     return sum + item.picked * (item.unitCostAvg ?? averageCost);
   }, 0);
-  return elapsedSeconds / 3600 * order.hourlyRate + materialCost;
+  return order.laborCost + materialCost;
 }
 
 // Comprometido = materiales pendientes de consumir + mano de obra restante de una OT abierta.
@@ -319,7 +296,7 @@ export function committedCost(order: TimedOrder, stock: StockBin[]): number {
 export function wbsTotals(contract: Contract, orders: TimedOrder[], stock: StockBin[]) {
   return contract.wbs.map((element) => {
     const linked = orders.filter((order) => order.wbs === element.code);
-    const actual = linked.reduce((sum, order) => sum + allocatedCost(order, stock, order.currentSeconds), 0);
+    const actual = linked.reduce((sum, order) => sum + allocatedCost(order, stock), 0);
     const committed = linked.filter((order) => order.status !== "Cerrada")
       .reduce((sum, order) => sum + committedCost(order, stock), 0);
     const projected = linked.reduce((sum, order) => sum + plannedLaborCost(order) +
@@ -330,7 +307,7 @@ export function wbsTotals(contract: Contract, orders: TimedOrder[], stock: Stock
 }
 
 export function costSummary(orders: TimedOrder[], stock: StockBin[]) {
-  const actual = orders.reduce((sum, order) => sum + allocatedCost(order, stock, order.currentSeconds), 0);
+  const actual = orders.reduce((sum, order) => sum + allocatedCost(order, stock), 0);
   const committed = orders.filter((order) => order.status !== "Cerrada")
     .reduce((sum, order) => sum + committedCost(order, stock), 0);
   return { actual, committed };

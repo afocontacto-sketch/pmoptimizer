@@ -11,25 +11,27 @@ import {
   Typography,
 } from "@mui/material";
 import { Add } from "@mui/icons-material";
-import { nextDocNumber, orderTypeSeries } from "../../data/docNumbering";
+import { allowedOrderTypes } from "../../app/permissions";
 import { money } from "../../data/format";
-import { typeLabels } from "../../data/workOrders";
+import { createWorkOrder, typeLabels } from "../../data/workOrders";
 import type { OrderType } from "../../data/workOrders";
 import { readEquipmentMaster } from "../masterData";
 import { materialsForRoute, routeLaborCost } from "../operationsData";
 import type { ProductionCtx } from "./useProductionCtx";
 
 export default function CreateOrderForm({ ctx }: { ctx: ProductionCtx }) {
-  const { user, orders, setOrders, routes, plans, contracts, employees, technicianProfiles, canCreate, setError, setMessage } = ctx;
-  const [newOrder, setNewOrder] = useState({
-    type: "PRE" as OrderType,
+  const { user, role, orders, routes, plans, contracts, employees, technicianProfiles, canCreate, setError, setMessage } = ctx;
+  const allowedTypes = allowedOrderTypes(role);
+  const [newOrder, setNewOrder] = useState(() => ({
+    type: (allowedTypes[0] ?? "PRE") as OrderType,
     contract: contracts[0].code,
     planId: "",
     routeId: routes[0]?.id ?? "",
     equipment: "",
     description: "",
     technician: technicianProfiles[0].name,
-  });
+    dueDate: new Date().toISOString().slice(0, 10),
+  }));
   const currentContract = contracts.find((contract) => contract.code === newOrder.contract) ?? contracts[0];
   const selectedRoute = routes.find((route) => route.id === newOrder.routeId);
   const selectedPlan = plans.find((plan) => plan.id === newOrder.planId);
@@ -79,15 +81,7 @@ export default function CreateOrderForm({ ctx }: { ctx: ProductionCtx }) {
     const technician = newOrder.technician
       ? technicianProfiles.find((item) => item.name === newOrder.technician) ?? technicianProfiles[0]
       : undefined;
-    let id: string;
-    try {
-      id = nextDocNumber(orderTypeSeries[newOrder.type], (candidate) => orders.some((item) => item.id === candidate));
-    } catch (numberError) {
-      setError(numberError instanceof Error ? numberError.message : "No se pudo numerar la OT.");
-      return;
-    }
-    setOrders((current) => [...current, {
-      id,
+    const result = createWorkOrder({
       contract: selectedContract.code,
       wbs,
       planId: selectedPlan?.id,
@@ -100,29 +94,19 @@ export default function CreateOrderForm({ ctx }: { ctx: ProductionCtx }) {
       assignees: technician
         ? [{ employeeId: employees.find((item) => item.name === technician.name)?.id ?? "", name: technician.name }]
         : [],
-      hourlyRate: technician?.rate ?? 0,
       projectedHours,
       projectedLaborCost: route ? routeLaborCost(route) : 0,
-      elapsedSeconds: 0,
-      timerStartedAt: null,
-      status: "Asignada",
       materials: route ? materialsForRoute(route) : [],
-      pickingStatus: "Sin picking",
-      dueDate: new Date().toISOString().slice(0, 10),
-      statusHistory: [],
-      createdAt: new Date().toISOString(),
-      createdBy: user,
-      reservedPicks: [],
-      qualityChecklist: {},
-      qualityApproved: false,
-      qualityApprovedBy: null,
-      supervisorClosedBy: null,
-    }]);
+      dueDate: newOrder.dueDate,
+    }, { user, role });
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
     setNewOrder((current) => ({ ...current, equipment: "", description: "" }));
     setError("");
-    setMessage(`OT ${id} creada con ${route?.name ?? "sin hoja (orden de espera)"}; materiales y horas de ruta asociados a ${wbs}.`);
+    setMessage(`OT ${result.value.id} creada con ${route?.name ?? "sin hoja (orden de espera)"}; materiales y horas de ruta asociados a ${wbs}.`);
   };
-
 
   return (
     <Paper sx={{ p: 3 }}>
@@ -137,7 +121,7 @@ export default function CreateOrderForm({ ctx }: { ctx: ProductionCtx }) {
           <Grid size={{ xs: 12, sm: 6, lg: 2 }}>
             <TextField select label="Tipo de OT" value={newOrder.type} onChange={(event) => {
               const value = event.target.value as OrderType;
-              if (["PRE", "OVH", "COR", "REP", "ESPERA"].includes(value)) {
+              if (allowedTypes.includes(value)) {
                 setNewOrder((current) => ({
                   ...current,
                   type: value,
@@ -146,7 +130,7 @@ export default function CreateOrderForm({ ctx }: { ctx: ProductionCtx }) {
                 }));
               }
             }} fullWidth>
-              {Object.entries(typeLabels).map(([code, label]) => <MenuItem key={code} value={code}>{code} · {label}</MenuItem>)}
+              {allowedTypes.map((code) => <MenuItem key={code} value={code}>{code} · {typeLabels[code]}</MenuItem>)}
             </TextField>
           </Grid>
           <Grid size={{ xs: 12, sm: 6, lg: 2 }}>
@@ -161,7 +145,7 @@ export default function CreateOrderForm({ ctx }: { ctx: ProductionCtx }) {
                 routeId: plan?.routeId ?? current.routeId,
                 equipment: plan?.equipmentId ?? current.equipment,
                 contract: planContract?.code ?? current.contract,
-                type: planType ?? current.type,
+                type: planType && allowedTypes.includes(planType) ? planType : current.type,
                 description: plan ? `${plan.name} · generado desde plan` : current.description,
               }));
             }} fullWidth>
@@ -209,8 +193,11 @@ export default function CreateOrderForm({ ctx }: { ctx: ProductionCtx }) {
           <Grid size={{ xs: 12, md: 8 }}>
             <TextField label="Descripción del trabajo" value={newOrder.description} onChange={(event) => setNewOrder((current) => ({ ...current, description: event.target.value }))} required fullWidth />
           </Grid>
-          <Grid size={{ xs: 12 }}>
+          <Grid size={{ xs: 12, md: 8 }}>
             <TextField label="Elemento WBS de imputación" value={selectedPlan?.wbs || currentContract.wbs.find((item) => item.type === newOrder.type)?.code || "Sin WBS para este tipo"} slotProps={{ input: { readOnly: true } }} fullWidth />
+          </Grid>
+          <Grid size={{ xs: 12, md: 4 }}>
+            <TextField type="date" label="Fecha programada" value={newOrder.dueDate} onChange={(event) => setNewOrder((current) => ({ ...current, dueDate: event.target.value }))} slotProps={{ inputLabel: { shrink: true } }} required fullWidth />
           </Grid>
         </Grid>
         {selectedRoute && newOrder.type !== "ESPERA" && (

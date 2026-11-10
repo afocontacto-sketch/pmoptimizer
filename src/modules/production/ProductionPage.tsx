@@ -1,6 +1,7 @@
 import { Alert, Box, Grid, Paper, Stack, Tab, Tabs, Typography } from "@mui/material";
 import { useSearchParams } from "react-router-dom";
 import type { Role } from "../../app/roles";
+import { can } from "../../app/permissions";
 import { KpiCard } from "../../components/KpiCard";
 import { money } from "../../data/format";
 import { useFeedback } from "../../hooks/useOperations";
@@ -13,6 +14,7 @@ import PlanCallsTab from "./PlanCallsTab";
 import ProductionOrdersTab from "./ProductionOrdersTab";
 import ReopenDialog from "./ReopenDialog";
 import TeamTab from "./TeamTab";
+import TimelineTab from "./TimelineTab";
 import { useProductionCtx } from "./useProductionCtx";
 import WbsCostTab from "./WbsCostTab";
 
@@ -21,13 +23,13 @@ export default function ProductionPage({ user, role }: { user: string; role: Rol
   const { message, error, setMessage, setError } = useFeedback();
   const ctx = useProductionCtx(user, role, { setMessage, setError });
   const [params, setParams] = useSearchParams();
-  const { isSupervisor, canCloseOrders, canCreate, contracts, visibleOrders, stock } = ctx;
-  const canSeeCosts = role !== "Supervisor" && role !== "Técnico";
+  const { isSupervisor, canCloseOrders, canCreate, canSeeCosts, contracts, visibleOrders, stock } = ctx;
   const tabs = [
     { id: "ordenes", label: "Órdenes de trabajo" },
     ...(canSeeCosts ? [{ id: "costos", label: "Contrato y costos WBS" }] : []),
     ...(canSeeCosts && canCloseOrders ? [{ id: "cerradas", label: "OT cerradas" }] : []),
     ...(isSupervisor ? [{ id: "equipo", label: "Personal" }] : []),
+    { id: "linea", label: "Línea de tiempo" },
     { id: "produccion", label: "Órdenes de producción" },
   ];
   const active = tabs.find((item) => item.id === params.get("tab"))?.id ?? tabs[0].id;
@@ -69,15 +71,16 @@ export default function ProductionPage({ user, role }: { user: string; role: Rol
 
       {active === "ordenes" && canCreate && (
         <Stack spacing={3}>
-          <PlanCallsTab ctx={ctx} />
+          {can(role, "plan.edit") && <PlanCallsTab ctx={ctx} />}
           <CreateOrderForm ctx={ctx} />
           <OrdersBoard ctx={ctx} />
         </Stack>
       )}
-      {active === "ordenes" && isSupervisor && <AssignmentTab ctx={ctx} />}
+      {active === "ordenes" && can(role, "order.assign") && <AssignmentTab ctx={ctx} />}
       {active === "costos" && <WbsCostTab ctx={ctx} />}
       {active === "cerradas" && <ClosedOrdersTab ctx={ctx} />}
       {active === "equipo" && <TeamTab ctx={ctx} />}
+      {active === "linea" && <TimelineTab ctx={ctx} />}
       {active === "produccion" && <ProductionOrdersTab user={user} role={role} />}
 
       <ReopenDialog ctx={ctx} />

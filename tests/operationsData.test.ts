@@ -9,6 +9,7 @@ import {
   isPickableLocation,
   readOrders,
   readStock,
+  timedOrders,
   receivePurchaseLine,
   releaseQualityLot,
   wbsTotals,
@@ -49,7 +50,7 @@ const order = (over: Partial<WorkOrder>): WorkOrder => ({
   id: "51000001", type: "PRE", contract: "CT1234", wbs: "CT1234-PRE", equipment: "EQ", description: "",
   dueDate: "2026-01-01", assignees: [], projectedHours: 4, status: "Asignada", materials: [],
   pickingStatus: "Sin picking", statusHistory: [], createdAt: "", createdBy: "u",
-  hourlyRate: 1000, elapsedSeconds: 0, timerStartedAt: null, supervisorClosedBy: null, ...over,
+  projectedLaborCost: 4000, supervisorClosedBy: null, ...over,
 });
 
 describe("formato", () => {
@@ -91,37 +92,47 @@ describe("stock", () => {
     expect(events).toEqual([keys.warehouseBins]);
   });
 });
-
 describe("órdenes y costos", () => {
-  test("readOrders completa campos de ejecución y WBS de ESPERA", () => {
+
+  test("readOrders completa supervisorClosedBy y WBS de ESPERA", () => {
     store.set(keys.workOrders, JSON.stringify([
-      { ...order({ id: "13000001", type: "ESPERA", wbs: "" }), hourlyRate: undefined, elapsedSeconds: undefined },
+      { ...order({ id: "13000001", type: "ESPERA", wbs: "" }), supervisorClosedBy: undefined },
     ]));
-    const [loaded] = readOrders((name, fallback) => name === "" ? 777 : fallback);
-    expect(loaded.hourlyRate).toBe(777);
-    expect(loaded.elapsedSeconds).toBe(0);
+    const [loaded] = readOrders();
+    expect(loaded.supervisorClosedBy).toBeNull();
     expect(loaded.wbs).toBe("CT1234-CL-B2N4-IND");
   });
 
   test("writeOrders lee fresco, guarda y notifica la clave", () => {
     store.set(keys.workOrders, JSON.stringify([order({})]));
-    expect(writeOrders(() => 0, (current) => current.map((item) => ({ ...item, status: "Cerrada" })))).toBe(true);
+    expect(writeOrders((current) => current.map((item) => ({ ...item, status: "Cerrada" })))).toBe(true);
     expect(JSON.parse(store.get(keys.workOrders) ?? "[]")[0].status).toBe("Cerrada");
     expect(events).toEqual([keys.workOrders]);
   });
 
-  test("allocatedCost suma horas x tarifa y material entregado", () => {
-    const withMaterial = order({
-      hourlyRate: 1000,
-      materials: [{ code: "MAT-1", required: 4, picked: 2, unitCostAvg: 150 }],
-    });
-    expect(allocatedCost(withMaterial, [], 7200)).toBe(2 * 1000 + 2 * 150);
+  test("timedOrders deriva segundos y mano de obra de timeEntries (abierta crece con now)", () => {
+    const entries = [
+      { id: "T1", orderId: "51000001", orderType: "PRE" as const, wbs: "W", operationOrder: 10, operationName: "Op", employeeId: "E1", employeeName: "A", start: "2026-11-10T08:00:00.000Z", end: "2026-11-10T10:00:00.000Z", hourlyRate: 1000 },
+      { id: "T2", orderId: "51000001", orderType: "PRE" as const, wbs: "W", operationOrder: 20, operationName: "Op2", employeeId: "E2", employeeName: "B", start: "2026-11-10T09:00:00.000Z", end: null, hourlyRate: 2000 },
+    ];
+    const now = Date.parse("2026-11-10T10:00:00.000Z");
+    const [timed] = timedOrders([order({})], entries, now);
+    expect(timed.currentSeconds).toBe(3 * 3600);
+    expect(timed.laborCost).toBe(2 * 1000 + 1 * 2000);
+    expect(timedOrders([order({})], entries, now + 3600000)[0].laborCost).toBe(2000 + 4000);
   });
 
+  test("allocatedCost suma mano de obra derivada y material entregado", () => {
+    const withMaterial: TimedOrder = {
+      ...order({ materials: [{ code: "MAT-1", required: 4, picked: 2, unitCostAvg: 150 }] }),
+      currentSeconds: 7200, laborCost: 2000,
+    };
+    expect(allocatedCost(withMaterial, [])).toBe(2 * 1000 + 2 * 150);
+  });
   test("wbsTotals y costSummary: real, comprometido y proyección", () => {
     const timed: TimedOrder = {
       ...order({ materials: [{ code: "MAT-1", required: 4, picked: 1, unitCostAvg: 100 }] }),
-      currentSeconds: 3600,
+      currentSeconds: 3600, laborCost: 1000,
     };
     const contract = {
       code: "CT1234", customer: "C", description: "",

@@ -1,4 +1,5 @@
 import { keys } from "../data/keys";
+import { orderTimeTotals, readTimeEntries } from "../data/workOrders";
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import {
@@ -55,8 +56,6 @@ type OperationalOrder = {
   contract: string;
   wbs: string;
   equipment: string;
-  elapsedSeconds: number;
-  hourlyRate: number;
   consumedMaterials: { code: string; quantity: number; unitCost?: number }[];
 };
 type StockBin = { code: string; quantity: number; unitCost: number };
@@ -209,6 +208,7 @@ function makePayrollPaymentEntry(
 
 function readOperationsCost(): { id: string; contract: string; wbs: string; equipment: string; labor: number; materials: number; total: number }[] {
   const orders = readFinanceList<OperationalOrder>(workOrdersStorageKey);
+  const timeEntries = readTimeEntries();
   const bins = readFinanceList<StockBin>(warehouseStorageKey);
   const averageCost = new Map<string, { quantity: number; value: number }>();
   for (const bin of bins) {
@@ -218,7 +218,7 @@ function readOperationsCost(): { id: string; contract: string; wbs: string; equi
     averageCost.set(bin.code, balance);
   }
   return orders.filter((order) => order.status === "Cerrada").map((order) => {
-    const labor = Math.max(0, order.elapsedSeconds) / 3600 * Math.max(0, order.hourlyRate);
+    const labor = orderTimeTotals(order.id, timeEntries, Date.now()).laborCost;
     const materials = (order.consumedMaterials ?? []).reduce((total, item) => {
       const balance = averageCost.get(item.code);
       const unitCost = item.unitCost ?? (balance && balance.quantity > 0 ? balance.value / balance.quantity : 0);

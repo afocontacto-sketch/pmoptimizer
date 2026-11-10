@@ -9,13 +9,13 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
-import { nextDocNumber, orderTypeSeries } from "../../data/docNumbering";
+import { createWorkOrder } from "../../data/workOrders";
 import type { PlannedCallRecord } from "../maintenanceData";
 import { materialsForRoute, routeLaborCost } from "../operationsData";
 import type { ProductionCtx } from "./useProductionCtx";
 
 export default function PlanCallsTab({ ctx }: { ctx: ProductionCtx }) {
-  const { user, orders, setOrders, routes, plannedCalls, contracts, canCreate, setError, setMessage } = ctx;
+  const { user, role, orders, routes, plannedCalls, contracts, canCreate, setError, setMessage } = ctx;
 
   const createOrderFromCall = (call: PlannedCallRecord) => {
     if (!canCreate) {
@@ -34,44 +34,7 @@ export default function PlanCallsTab({ ctx }: { ctx: ProductionCtx }) {
     const contract = contracts.find((item) => item.code === call.plan.contract) ?? contracts[0];
     const wbsElement = contract.wbs.find((item) => item.code === call.plan.wbs);
     const orderType = wbsElement?.type && wbsElement.type !== "ESPERA" ? wbsElement.type : "PRE";
-    let id: string;
-    try {
-      id = nextDocNumber(orderTypeSeries[orderType], (candidate) => orders.some((item) => item.id === candidate));
-    } catch (numberError) {
-      setError(numberError instanceof Error ? numberError.message : "No se pudo numerar la OT.");
-      return;
-    }
-    setOrders((current) => [...current, {
-      id,
-      contract: contract.code,
-      wbs: call.plan.wbs || contract.wbs.find((item) => item.type === orderType)?.code || "",
-      planId: call.plan.id,
-      plannedCallId: call.id,
-      routeId: route.id,
-      routeName: route.name,
-      routeOperations: route.operations,
-      type: orderType,
-      equipment: call.plan.equipmentId,
-      description: `Llamada ${call.id} · ${call.plan.name} · fecha requerida ${call.dueDate.slice(0, 10)}`,
-      assignees: [],
-      hourlyRate: 0,
-      projectedHours: route.operations.reduce((sum, operation) => sum + operation.durationHours, 0),
-      projectedLaborCost: routeLaborCost(route),
-      elapsedSeconds: 0,
-      timerStartedAt: null,
-      status: "Asignada",
-      materials: materialsForRoute(route),
-      pickingStatus: "Sin picking",
-      dueDate: call.dueDate.slice(0, 10),
-      statusHistory: [],
-      createdAt: new Date().toISOString(),
-      createdBy: user,
-      reservedPicks: [],
-      qualityChecklist: {},
-      qualityApproved: false,
-      qualityApprovedBy: null,
-      supervisorClosedBy: null,
-    }]);
+const result = createWorkOrder({      contract: contract.code,      wbs: call.plan.wbs || contract.wbs.find((item) => item.type === orderType)?.code || "",      planId: call.plan.id,      plannedCallId: call.id,      routeId: route.id,      routeName: route.name,      routeOperations: route.operations,      type: orderType,      equipment: call.plan.equipmentId,      description: `Llamada ${call.id} · ${call.plan.name} · fecha requerida ${call.dueDate.slice(0, 10)}`,      projectedHours: route.operations.reduce((sum, operation) => sum + operation.durationHours, 0),      projectedLaborCost: routeLaborCost(route),      materials: materialsForRoute(route),      dueDate: call.dueDate.slice(0, 10),    }, { user, role });    if (!result.ok) {      setError(result.error);      return;    }    const id = result.value.id;
     setMessage(`OT ${id} creada desde ${call.id} con hoja ${route.id}; sus materiales ya están disponibles para picking.`);
     setError("");
   };
