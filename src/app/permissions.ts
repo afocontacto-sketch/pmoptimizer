@@ -3,7 +3,7 @@ import type { Role } from "./roles";
 
 export type Action =
   | "material.create" | "material.edit" | "equipment.edit"
-  | "material.editParams"
+  | "material.editParams" | "material.documents"
   | "route.edit"
   | "plan.edit"
   | "order.create" | "order.assign" | "order.operate" | "order.close" | "order.reopen"
@@ -24,6 +24,7 @@ export const permissions: Record<Action, readonly Role[]> = {
   "material.edit": [ING],
   "equipment.edit": [ING],
   "material.editParams": ["Planificador", "Compras"],
+  "material.documents": [ING],
   "route.edit": [ING],
   "plan.edit": ["Planificador"],
   "order.create": ["Supervisor", "Planificador"], // tipos por rol: allowedOrderTypes

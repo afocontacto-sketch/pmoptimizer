@@ -6,8 +6,8 @@ import type { Role } from "../../app/roles";
 import { can } from "../../app/permissions";
 import { downloadTemplate, parseCsvRow } from "../../data/csv";
 import { keys } from "../../data/keys";
-import { createMaterials, updateMaterialParams } from "../../data/materials";
-import type { Incoterm, NewMaterialInput } from "../../data/materials";
+import { MATERIAL_DOC_EXTENSIONS, addMaterialDocument, createMaterials, deleteMaterialDocument, materialDocTypes, readMaterialDocuments, updateMaterialParams, updateMaterialTechnical } from "../../data/materials";
+import type { Incoterm, MaterialDocType, MaterialDocument, NewMaterialInput } from "../../data/materials";
 import { useStoredValue } from "../../hooks/useStore";
 import { getMaterialRows, isCritical } from "./materialRows";
 import type { MaterialRow } from "./materialRows";
@@ -39,6 +39,14 @@ export default function MaterialsMaster({ mode, user, role, title = "Materiales 
   const [edit, setEdit] = useState<{ code: string; reorderPoint: string; leadTimeDays: string; incoterm: string; minLot: string } | null>(null);
   const canCreate = mode === "master" && can(role, "material.create");
   const canParams = mode === "params" && can(role, "material.editParams");
+  const canTech = mode === "master" && can(role, "material.edit");
+  const canDocs = mode === "master" && can(role, "material.documents");
+  const [tech, setTech] = useState<{ code: string; name: string; unit: string; category: string; description: string; specification: string } | null>(null);
+  const [docCode, setDocCode] = useState<string | null>(null);
+  const [docType, setDocType] = useState<MaterialDocType>("Ficha técnica");
+  const [docName, setDocName] = useState("");
+  const [docDate, setDocDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const documents = useStoredValue<MaterialDocument[]>(keys.materialDocuments, useCallback(() => readMaterialDocuments(), []));
   const actor = { user, role };
 
   const save = (event: FormEvent) => {
@@ -80,6 +88,43 @@ export default function MaterialsMaster({ mode, user, role, title = "Materiales 
     }, actor);
     if (!result.ok) { setError(result.error); return; }
     setError(""); setMessage(`Parámetros de ${edit.code} guardados.`); setEdit(null);
+  };
+
+  const saveTech = () => {
+    if (!tech) return;
+    const { code, ...patch } = tech;
+    const result = updateMaterialTechnical(code, patch, actor);
+    if (!result.ok) { setError(result.error); return; }
+    setError(""); setMessage(`Datos técnicos de ${code} guardados.`); setTech(null);
+  };
+
+  const uploadDoc = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file || !docCode) return;
+    setError(""); setMessage("");
+    const reader = new FileReader();
+    reader.onerror = () => setError("No se pudo leer el archivo.");
+    reader.onload = () => {
+      const result = addMaterialDocument({
+        materialCode: docCode, type: docType, name: docName.trim() || file.name, date: docDate,
+        fileName: file.name, size: file.size, dataUrl: String(reader.result),
+      }, actor);
+      if (!result.ok) { setError(result.error); return; }
+      setDocName(""); setMessage("Documento cargado.");
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const removeDoc = (id: string) => {
+    const result = deleteMaterialDocument(id, actor);
+    if (!result.ok) { setError(result.error); return; }
+    setError(""); setMessage("Documento eliminado.");
+  };
+
+  const downloadDoc = (doc: MaterialDocument) => {
+    const link = document.createElement("a");
+    link.href = doc.dataUrl; link.download = doc.fileName; link.click();
   };
 
   const field = (label: string, key: DraftKey, xs = 2, type = "text", required = false) => (
@@ -134,18 +179,28 @@ export default function MaterialsMaster({ mode, user, role, title = "Materiales 
               <TableCell>Código</TableCell><TableCell>Material</TableCell><TableCell>Categoría</TableCell><TableCell>Unidad</TableCell>
               <TableCell align="right">Disponible</TableCell><TableCell align="right">Bloqueado QC</TableCell><TableCell align="right">En tránsito</TableCell>
               <TableCell align="right">Reposición</TableCell><TableCell align="right">Lead time</TableCell><TableCell>Incoterm</TableCell><TableCell align="right">Lote mín.</TableCell>
-              <TableCell>Estado</TableCell>{canParams && <TableCell />}
+              <TableCell>Estado</TableCell>{(canParams || canTech) && <TableCell />}<TableCell>Documentos</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
             {rows.map((item) => {
               const editing = canParams && edit?.code === item.code;
+              const techEditing = canTech && tech?.code === item.code;
               const cell = (key: "reorderPoint" | "leadTimeDays" | "minLot", value: number | undefined) => editing && edit
                 ? <TextField size="small" type="number" value={edit[key]} onChange={(event) => setEdit({ ...edit, [key]: event.target.value })} sx={{ width: 90 }} />
                 : (value ?? "-");
               return (
                 <TableRow key={item.code}>
-                  <TableCell>{item.code}</TableCell><TableCell>{item.name}</TableCell><TableCell>{item.category}</TableCell><TableCell>{item.unit}</TableCell>
+                  <TableCell>{item.code}</TableCell>
+                  <TableCell>{techEditing && tech ? (
+                    <Stack spacing={1}>
+                      <TextField size="small" label="Nombre" value={tech.name} onChange={(event) => setTech({ ...tech, name: event.target.value })} />
+                      <TextField size="small" label="Descripción" value={tech.description} onChange={(event) => setTech({ ...tech, description: event.target.value })} />
+                      <TextField size="small" label="Especificación" value={tech.specification} onChange={(event) => setTech({ ...tech, specification: event.target.value })} />
+                    </Stack>
+                  ) : (<>{item.name}{item.description && <Typography variant="caption" sx={{ display: "block" }}>{item.description}</Typography>}{item.specification && <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>{item.specification}</Typography>}</>)}</TableCell>
+                  <TableCell>{techEditing && tech ? <TextField size="small" value={tech.category} onChange={(event) => setTech({ ...tech, category: event.target.value })} sx={{ width: 120 }} /> : item.category}</TableCell>
+                  <TableCell>{techEditing && tech ? <TextField size="small" value={tech.unit} onChange={(event) => setTech({ ...tech, unit: event.target.value })} sx={{ width: 90 }} /> : item.unit}</TableCell>
                   <TableCell align="right">{item.available}</TableCell><TableCell align="right">{item.quality}</TableCell><TableCell align="right">{item.inTransit}</TableCell>
                   <TableCell align="right">{cell("reorderPoint", item.reorderPoint)}</TableCell>
                   <TableCell align="right">{cell("leadTimeDays", item.leadTimeDays)}</TableCell>
@@ -159,6 +214,14 @@ export default function MaterialsMaster({ mode, user, role, title = "Materiales 
                     <Chip size="small" label={item.reorderPoint <= 0 ? "Sin mínimo" : isCritical(item) ? "Crítico" : "OK"}
                       color={item.reorderPoint <= 0 ? "default" : isCritical(item) ? "error" : "success"} />
                   </TableCell>
+                  {canTech && (
+                    <TableCell>
+                      {techEditing
+                        ? <Stack direction="row" spacing={1}><Button size="small" variant="contained" onClick={saveTech}>Guardar</Button><Button size="small" onClick={() => setTech(null)}>Cancelar</Button></Stack>
+                        : <Button size="small" disabled={item.category === "Sin categoría"} onClick={() => setTech({ code: item.code, name: item.name, unit: item.unit, category: item.category, description: item.description ?? "", specification: item.specification ?? "" })}>Editar</Button>}
+                    </TableCell>
+                  )}
+                  <TableCell><Button size="small" onClick={() => setDocCode(docCode === item.code ? null : item.code)}>{documents.filter((doc) => doc.materialCode === item.code).length} doc.</Button></TableCell>
                   {canParams && (
                     <TableCell>
                       {editing
@@ -172,6 +235,41 @@ export default function MaterialsMaster({ mode, user, role, title = "Materiales 
           </TableBody>
         </Table>
       </Paper>
+      {docCode && (
+        <Paper sx={{ p: 2 }}>
+          <Typography variant="h6" sx={{ mb: 1 }}>Documentos de {docCode}</Typography>
+          {canDocs && (
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 2 }}>
+              <TextField select size="small" label="Tipo" value={docType} onChange={(event) => setDocType(event.target.value as MaterialDocType)} sx={{ minWidth: 160 }}>
+                {materialDocTypes.map((type) => <MenuItem key={type} value={type}>{type}</MenuItem>)}
+              </TextField>
+              <TextField size="small" label="Nombre" value={docName} onChange={(event) => setDocName(event.target.value)} />
+              <TextField size="small" label="Fecha" type="date" value={docDate} onChange={(event) => setDocDate(event.target.value)} slotProps={{ inputLabel: { shrink: true } }} />
+              <Button component="label" variant="outlined">Subir archivo (máx. 2 MB)
+                <input hidden type="file" accept={MATERIAL_DOC_EXTENSIONS.map((ext) => `.${ext}`).join(",")} onChange={uploadDoc} />
+              </Button>
+            </Stack>
+          )}
+          <Table size="small">
+            <TableHead><TableRow><TableCell>Tipo</TableCell><TableCell>Nombre</TableCell><TableCell>Fecha</TableCell><TableCell>Archivo</TableCell><TableCell /></TableRow></TableHead>
+            <TableBody>
+              {documents.filter((doc) => doc.materialCode === docCode).map((doc) => (
+                <TableRow key={doc.id}>
+                  <TableCell>{doc.type}</TableCell><TableCell>{doc.name}</TableCell><TableCell>{doc.date}</TableCell><TableCell>{doc.fileName}</TableCell>
+                  <TableCell>
+                    <Stack direction="row" spacing={1}>
+                      <Button size="small" component="a" href={doc.dataUrl} target="_blank" rel="noreferrer">Ver</Button>
+                      <Button size="small" onClick={() => downloadDoc(doc)}>Descargar</Button>
+                      {canDocs && <Button size="small" color="error" onClick={() => removeDoc(doc.id)}>Eliminar</Button>}
+                    </Stack>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {documents.every((doc) => doc.materialCode !== docCode) && <TableRow><TableCell colSpan={5}>Sin documentos.</TableCell></TableRow>}
+            </TableBody>
+          </Table>
+        </Paper>
+      )}
     </Stack>
   );
 }

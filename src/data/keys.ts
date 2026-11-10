@@ -10,6 +10,7 @@ export const keys = {
   session: k("session"),
   clients: k("clients"),
   materialMaster: k("material-master"),
+  materialDocuments: k("material-documents"),
   equipment: k("equipment"),
   maintenanceRoutes: k("maintenance-routes"),
   maintenancePlans: k("maintenance-plans"),

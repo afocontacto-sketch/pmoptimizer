@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import type { AuditRecord } from "../src/data/audit";
 import { keys } from "../src/data/keys";
-import { createMaterials, demoMaterials, readMaterials, updateMaterialParams } from "../src/data/materials";
+import { MATERIAL_DOC_MAX_BYTES, addMaterialDocument, createMaterials, deleteMaterialDocument, demoMaterials, readMaterialDocuments, readMaterials, updateMaterialParams, updateMaterialTechnical } from "../src/data/materials";
 import type { StockBin } from "../src/data/stock";
 import { addEquipment, readEquipmentMaster } from "../src/modules/masterData";
 import { getMaterialRows, isCritical } from "../src/modules/materials/materialRows";
@@ -72,5 +72,45 @@ describe("addEquipment", () => {
     expect(addEquipment([{ ...item, code: "EQ-2" }], ["CT1234"], ing).ok).toBe(false);
     expect(addEquipment([{ ...item, code: "EQ-3", serialNumber: "S3" }], [], ing).ok).toBe(false);
     expect(addEquipment([{ ...item, code: "EQ-4", serialNumber: "S4" }], ["CT1234"], compras).ok).toBe(false);
+  });
+});
+
+const doc = { materialCode: "MAT-114", type: "Ficha técnica" as const, name: "Ficha", date: "2026-02-01", fileName: "ficha.pdf", size: 100, dataUrl: "data:application/pdf;base64,AAAA" };
+
+describe("updateMaterialTechnical", () => {
+  test("Ingeniería edita datos técnicos sin tocar parámetros y deja audit before/after", () => {
+    const before = readMaterials().find((item) => item.code === "MAT-114")!;
+    expect(updateMaterialTechnical("MAT-114", { name: "Cinta 3M 20m", specification: "PVC 0.18 mm" }, ing).ok).toBe(true);
+    const saved = readMaterials().find((item) => item.code === "MAT-114")!;
+    expect(saved).toMatchObject({ code: "MAT-114", name: "Cinta 3M 20m", specification: "PVC 0.18 mm" });
+    expect([saved.reorderPoint, saved.minStock, saved.leadTimeDays, saved.incoterm, saved.minLot]).toEqual([before.reorderPoint, before.minStock, before.leadTimeDays, before.incoterm, before.minLot]);
+    expect(readStore<AuditRecord[]>(keys.auditLog, [])[0]).toMatchObject({ action: "updateTechnical", before: { name: "Cinta aislante 3M" }, after: { name: "Cinta 3M 20m" } });
+  });
+
+  test("rechaza rol sin permiso, parámetros de Supply y cambio de código", () => {
+    expect(updateMaterialTechnical("MAT-114", { name: "X" }, compras).ok).toBe(false);
+    expect(updateMaterialTechnical("MAT-114", { leadTimeDays: 99 } as never, ing).ok).toBe(false);
+    expect(updateMaterialTechnical("MAT-114", { code: "OTRO" } as never, ing).ok).toBe(false);
+    expect(readMaterials().find((item) => item.code === "MAT-114")).toMatchObject({ name: "Cinta aislante 3M", leadTimeDays: 7 });
+  });
+});
+
+describe("documentos de material", () => {
+  test("Ingeniería sube y borra; queda audit", () => {
+    const added = addMaterialDocument(doc, ing);
+    expect(added.ok).toBe(true);
+    expect(readMaterialDocuments("MAT-114")).toHaveLength(1);
+    if (added.ok) expect(deleteMaterialDocument(added.value.id, ing).ok).toBe(true);
+    expect(readMaterialDocuments("MAT-114")).toHaveLength(0);
+    expect(readStore<AuditRecord[]>(keys.auditLog, []).map((item) => item.action)).toEqual(["addDocument", "deleteDocument"]);
+  });
+
+  test("rol sin permiso no sube ni borra; respeta 2 MB y formatos", () => {
+    expect(addMaterialDocument(doc, compras).ok).toBe(false);
+    expect(addMaterialDocument({ ...doc, size: MATERIAL_DOC_MAX_BYTES + 1 }, ing).ok).toBe(false);
+    expect(addMaterialDocument({ ...doc, fileName: "virus.exe" }, ing).ok).toBe(false);
+    const added = addMaterialDocument(doc, ing);
+    if (added.ok) expect(deleteMaterialDocument(added.value.id, compras).ok).toBe(false);
+    expect(readMaterialDocuments()).toHaveLength(1);
   });
 });

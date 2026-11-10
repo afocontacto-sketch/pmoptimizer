@@ -8,7 +8,7 @@ import { approvedBudgetFromContract, demoContract } from "./contracts";
 import type { ApprovedBudget, ClientRecord, EacSnapshot } from "./contracts";
 import { formatDocNumber } from "./docNumbering";
 import { keys } from "./keys";
-import { demoMaterials } from "./materials";
+import { demoMaterialDocuments, demoMaterials } from "./materials";
 import type { MaterialRecord } from "./materials";
 import type { StockBin, StockMovement, TransferOrder } from "./stock";
 import { writeJson } from "./storage";
@@ -387,6 +387,7 @@ export function seedDemoData(now: Date = new Date()): SeedResult {
 
   const writes: [string, unknown][] = [
     [keys.materialMaster, [...demoMaterials, ...extraMaterials]],
+    [keys.materialDocuments, demoMaterialDocuments],
     [keys.workOrders, orders],
     [keys.timeEntries, timeEntries],
     [keys.warehouseBins, bins],
