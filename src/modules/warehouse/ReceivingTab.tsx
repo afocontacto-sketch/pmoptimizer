@@ -19,6 +19,7 @@ import {
 import { can } from "../../app/permissions";
 import type { Role } from "../../app/roles";
 import { money } from "../../data/format";
+import { isTransferRef, receivingTarget } from "../../data/stock";
 import type { StockBin } from "../../data/stock";
 import { useOperations } from "../../hooks/useOperations";
 import type { Feedback } from "../../hooks/useOperations";
@@ -27,13 +28,13 @@ import type { StockBinGroup } from "../operationsData";
 
 export default function ReceivingTab({ user, role, setMessage, setError }: { user: string; role: Role } & Feedback) {
   const { stock, setStock, recordMovement } = useOperations();
-  const [receipt, setReceipt] = useState({ code: "MAT-114", purchaseOrder: "", quantity: "1", qualityHold: true });
+  const [receipt, setReceipt] = useState({ code: "MAT-114", purchaseOrder: "", quantity: "1" });
   const [stockFilter, setStockFilter] = useState("");
   const [putawayLocations, setPutawayLocations] = useState<Record<string, string>>({});
   const canReceive = can(role, "warehouse.receivePO");
   const canPutaway = can(role, "warehouse.putaway");
   const canRelease = can(role, "quality.releaseStock");
-  const transitLines = stock.filter((bin) => bin.status === "En tránsito" && bin.quantity > 0);
+  const transitLines = stock.filter((bin) => bin.status === "En tránsito" && bin.quantity > 0 && !isTransferRef(bin.reference));
   const selectedTransitLine = transitLines.find((bin) =>
     bin.reference === receipt.purchaseOrder && bin.code === receipt.code,
   ) ?? transitLines[0];
@@ -64,12 +65,12 @@ export default function ReceivingTab({ user, role, setMessage, setError }: { use
       setError(`La recepción supera lo pendiente en ${receipt.purchaseOrder} (${source.quantity} ${source.unit}).`);
       return;
     }
+    const target = receivingTarget(source.code);
     const newBin: StockBin = {
       ...source,
       id: `BIN-REC-${Date.now()}`,
       warehouse: "Bodega Central",
-      location: receipt.qualityHold ? "REC-CALIDAD" : "REC-UBICAR",
-      status: receipt.qualityHold ? "Bloqueado calidad" : "Libre utilización",
+      ...target,
       quantity,
       reserved: 0,
     };
@@ -88,7 +89,7 @@ export default function ReceivingTab({ user, role, setMessage, setError }: { use
       return;
     }
     setError("");
-    setMessage(`Recepción de ${source.reference ?? receipt.purchaseOrder} registrada: ${quantity} ${source.unit} de ${source.name}. Pendiente: ${source.quantity - quantity}. ${receipt.qualityHold ? "Quedó bloqueada para inspección de Calidad." : "Quedó en zona de recepción hasta asignar ubicación."}`);
+    setMessage(`Recepción de ${source.reference ?? receipt.purchaseOrder} registrada: ${quantity} ${source.unit} de ${source.name}. Pendiente: ${source.quantity - quantity}. ${target.status === "Bloqueado calidad" ? "Quedó bloqueada para inspección de Calidad." : "Quedó en zona de recepción hasta asignar ubicación."}`);
   };
 
   const releaseQualityStock = (binId: string) => {
@@ -160,10 +161,7 @@ export default function ReceivingTab({ user, role, setMessage, setError }: { use
           </TextField>
           <TextField label="Material" value={selectedTransitLine?.name ?? receipt.code} slotProps={{ input: { readOnly: true } }} />
           <TextField label="Cantidad recibida" type="number" value={receipt.quantity} onChange={(event) => setReceipt((current) => ({ ...current, quantity: event.target.value }))} slotProps={{ htmlInput: { min: 1, max: selectedTransitLine?.quantity ?? 1, step: 1 } }} />
-          <TextField select label="Inspección de Calidad" value={receipt.qualityHold ? "hold" : "release"} onChange={(event) => setReceipt((current) => ({ ...current, qualityHold: event.target.value === "hold" }))}>
-            <MenuItem value="hold">Bloquear hasta inspección</MenuItem>
-            <MenuItem value="release">Sin inspección obligatoria</MenuItem>
-          </TextField>
+          <TextField label="Destino" value={selectedTransitLine && receivingTarget(selectedTransitLine.code).status === "Bloqueado calidad" ? "Bloqueado calidad (requiere inspección)" : "Libre utilización"} slotProps={{ input: { readOnly: true } }} />
           <Button type="submit" variant="contained" disabled={!canReceive || !selectedTransitLine}>Registrar recepción</Button>
         </Stack>
         {!canReceive && <Alert severity="info">La recepción desde OC está habilitada para Almacén, Compras y Administrador.</Alert>}

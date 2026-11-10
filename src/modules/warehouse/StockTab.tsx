@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Alert,
+  MenuItem,
   Paper,
   Stack,
   Table,
@@ -11,62 +12,68 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import { money } from "../../data/format";
+import { stockByMaterial } from "../../data/stock";
 import { useOperations } from "../../hooks/useOperations";
-import { aggregateStockBins, isPickableLocation } from "../operationsData";
 
-// Vista de consulta del Supervisor: stock libre para uso.
+// Consulta de stock por material (solo lectura): libre, por ubicar, calidad, tránsito, total y valor.
 export default function StockTab() {
   const { stock } = useOperations();
-  const [stockFilter, setStockFilter] = useState("");
-  const stockSearch = stockFilter.trim().toLowerCase();
-  const supervisorAvailableStock = aggregateStockBins(stock.filter((bin) => {
-    const availableQuantity = bin.quantity - bin.reserved;
-    return bin.status === "Libre utilización" &&
-      isPickableLocation(bin.location) &&
-      availableQuantity > 0;
-  })).filter((bin) =>
-    !stockSearch || `${bin.code} ${bin.name} ${bin.warehouse} ${bin.location}`.toLowerCase().includes(stockSearch),
-  );
+  const [warehouse, setWarehouse] = useState("");
+  const [filter, setFilter] = useState("");
+  const warehouses = useMemo(() => [...new Set(stock.map((bin) => bin.warehouse))].sort(), [stock]);
+  const search = filter.trim().toLowerCase();
+  const rows = stockByMaterial(stock, warehouse || undefined)
+    .filter((row) => !search || `${row.code} ${row.name}`.toLowerCase().includes(search));
+  const totalValue = rows.reduce((sum, row) => sum + row.value, 0);
 
   return (
-    <Stack spacing={2}>
-      <Paper sx={{ p: 3 }}>
-        <Typography variant="h6" sx={{ mb: 1 }}>Stock disponible para uso</Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-          Solo se muestran materiales en estado Libre utilización, descontando las cantidades reservadas.
-        </Typography>
-        <TextField
-          label="Buscar material, almacén o ubicación"
-          value={stockFilter}
-          onChange={(event) => setStockFilter(event.target.value)}
-          fullWidth
-          sx={{ mb: 2 }}
-        />
-        {supervisorAvailableStock.length === 0 ? (
-          <Alert severity="info">No hay stock disponible para uso que coincida con la búsqueda.</Alert>
-        ) : (
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Material</TableCell>
-                <TableCell>Almacén</TableCell>
-                <TableCell>Ubicación</TableCell>
-                <TableCell align="right">Disponible</TableCell>
+    <Paper sx={{ p: 3 }}>
+      <Typography variant="h6" sx={{ mb: 1 }}>Consulta de stock por material</Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+        Libre = utilización en ubicación definitiva; Por ubicar = libre aún en zona de recepción. Total = libre + por ubicar + calidad + tránsito.
+      </Typography>
+      <Stack direction={{ xs: "column", md: "row" }} spacing={2} sx={{ mb: 2 }}>
+        <TextField select label="Almacén" value={warehouse} onChange={(event) => setWarehouse(event.target.value)} sx={{ minWidth: 220 }}>
+          <MenuItem value="">Todos</MenuItem>
+          {warehouses.map((name) => <MenuItem key={name} value={name}>{name}</MenuItem>)}
+        </TextField>
+        <TextField label="Buscar material" value={filter} onChange={(event) => setFilter(event.target.value)} fullWidth />
+      </Stack>
+      {rows.length === 0 ? (
+        <Alert severity="info">No hay stock que coincida con el filtro.</Alert>
+      ) : (
+        <Table size="small">
+          <TableHead>
+            <TableRow>
+              <TableCell>Material</TableCell>
+              <TableCell align="right">Libre</TableCell>
+              <TableCell align="right">Por ubicar</TableCell>
+              <TableCell align="right">Calidad</TableCell>
+              <TableCell align="right">Tránsito</TableCell>
+              <TableCell align="right">Total</TableCell>
+              <TableCell align="right">Valor</TableCell>
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {rows.map((row) => (
+              <TableRow key={row.code}>
+                <TableCell>{row.code} · {row.name}</TableCell>
+                <TableCell align="right">{row.free} {row.unit}</TableCell>
+                <TableCell align="right">{row.unlocated}</TableCell>
+                <TableCell align="right">{row.quality}</TableCell>
+                <TableCell align="right">{row.transit}</TableCell>
+                <TableCell align="right">{row.total} {row.unit}</TableCell>
+                <TableCell align="right">{money(row.value)}</TableCell>
               </TableRow>
-            </TableHead>
-            <TableBody>
-              {supervisorAvailableStock.map((bin) => (
-                <TableRow key={bin.id}>
-                  <TableCell>{bin.code} · {bin.name}{bin.sourceBins.length > 1 && <Typography variant="caption" sx={{ display: "block" }}>{bin.sourceBins.length} registros acumulados</Typography>}</TableCell>
-                  <TableCell>{bin.warehouse}</TableCell>
-                  <TableCell>{bin.location}</TableCell>
-                  <TableCell align="right">{bin.quantity - bin.reserved} {bin.unit}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-      </Paper>
-    </Stack>
+            ))}
+            <TableRow>
+              <TableCell colSpan={6} sx={{ fontWeight: 700 }}>Valor total</TableCell>
+              <TableCell align="right" sx={{ fontWeight: 700 }}>{money(totalValue)}</TableCell>
+            </TableRow>
+          </TableBody>
+        </Table>
+      )}
+    </Paper>
   );
 }

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { ChangeEvent } from "react";
 import { Alert, Box, Paper, Stack, Tab, Tabs, Typography } from "@mui/material";
+import { can } from "../../app/permissions";
 import type { Role } from "../../app/roles";
 import { parseCsvRow } from "../../data/csv";
 import type { StockBin, StockStatus } from "../../data/stock";
@@ -9,15 +10,28 @@ import { makeMovement } from "../operationsData";
 import KardexTab from "./KardexTab";
 import PickingTab from "./PickingTab";
 import ReceivingTab from "./ReceivingTab";
+import DispatchBoardTab from "./DispatchBoardTab";
 import StockTab from "./StockTab";
+import TransfersTab from "./TransfersTab";
+import WarehouseDashboardTab from "./WarehouseDashboardTab";
 
 export default function WarehousePage({ user, role }: { user: string; role: Role }) {
   const { stock, setStock, recordMovement } = useOperations();
   const { message, error, setMessage, setError } = useFeedback();
-  const [tab, setTab] = useState(0);
+  const isSupervisor = role === "Supervisor";
+  const canOperate = can(role, "warehouse.pick") || can(role, "warehouse.receivePO") || can(role, "warehouse.putaway");
+  const tabs = [
+    { id: "dashboard", label: "Panel" },
+    ...(canOperate ? [{ id: "picking", label: "Picking y recepción" }] : []),
+    { id: "stock", label: "Consulta de stock" },
+    { id: "transfers", label: "Traspasos" },
+    { id: "board", label: "Pantalla 3 días" },
+    ...(!isSupervisor ? [{ id: "kardex", label: "Kardex y conteos" }] : []),
+  ];
+  const [selectedTab, setTab] = useState("dashboard");
+  const tab = tabs.some((item) => item.id === selectedTab) ? selectedTab : tabs[0].id;
   const [warehouseImportMessage, setWarehouseImportMessage] = useState("");
   const [warehouseImportError, setWarehouseImportError] = useState("");
-  const isSupervisor = role === "Supervisor";
   const feedback = { user, role, setMessage, setError };
 
   const importWarehouseCsv = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -116,20 +130,22 @@ export default function WarehousePage({ user, role }: { user: string; role: Role
       {error && <Alert severity="error">{error}</Alert>}
 
       <Paper sx={{ px: 2 }}>
-        <Tabs value={tab} onChange={(_, value: number) => setTab(value)} variant="scrollable" allowScrollButtonsMobile>
-          <Tab value={0} label="Almacén y picking" />
-          {!isSupervisor && <Tab value={1} label="Kardex y conteos" />}
+        <Tabs value={tab} onChange={(_, value: string) => setTab(value)} variant="scrollable" allowScrollButtonsMobile>
+          {tabs.map((item) => <Tab key={item.id} value={item.id} label={item.label} />)}
         </Tabs>
       </Paper>
 
-      {tab === 0 && isSupervisor && <StockTab />}
-      {tab === 0 && !isSupervisor && (
+      {tab === "dashboard" && <WarehouseDashboardTab />}
+      {tab === "stock" && <StockTab />}
+      {tab === "transfers" && <TransfersTab {...feedback} />}
+      {tab === "board" && <DispatchBoardTab />}
+      {tab === "picking" && (
         <Stack spacing={3}>
           <PickingTab {...feedback} importWarehouseCsv={importWarehouseCsv} importMessage={warehouseImportMessage} importError={warehouseImportError} />
           <ReceivingTab {...feedback} />
         </Stack>
       )}
-      {tab === 1 && !isSupervisor && <KardexTab {...feedback} importWarehouseCsv={importWarehouseCsv} />}
+      {tab === "kardex" && <KardexTab {...feedback} importWarehouseCsv={importWarehouseCsv} />}
     </Stack>
   );
 }

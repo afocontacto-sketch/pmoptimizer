@@ -23,6 +23,8 @@ import { useFeedback, useOperations } from "../../hooks/useOperations";
 import type { Feedback } from "../../hooks/useOperations";
 import { qualityCheckItems, releaseQualityLot } from "../operationsData";
 import type { WorkOrder } from "../operationsData";
+import InspectionMaterialsTab from "./InspectionMaterialsTab";
+import QualityDashboards from "./QualityDashboards";
 import QualityRecordsTab from "./QualityRecordsTab";
 
 type QualityProps = { user: string; role: Role } & Feedback;
@@ -44,6 +46,7 @@ function InspectionTab({ user, role, setMessage, setError }: QualityProps) {
       qualityChecklist: { ...(order.qualityChecklist ?? {}), [item]: checked },
       qualityApproved: false,
       qualityApprovedBy: null,
+      qualityApprovedAt: undefined,
     }));
     setError("");
   };
@@ -65,6 +68,7 @@ function InspectionTab({ user, role, setMessage, setError }: QualityProps) {
       ...current,
       qualityApproved: true,
       qualityApprovedBy: user,
+      qualityApprovedAt: new Date().toISOString(),
     }));
     setMessage(`Checklist de ${order.id} aprobado por ${user}; queda habilitado para cierre de Supervisor.`);
     setError("");
@@ -172,11 +176,15 @@ export default function QualityPage({ user, role }: { user: string; role: Role }
           <Tab value={0} label="Inspección OT" />
           <Tab value={1} label="Liberación de materiales" />
           <Tab value={2} label="Registros de inspección" />
+          <Tab value={3} label="Materiales a inspeccionar" />
+          <Tab value={4} label="Dashboards" />
         </Tabs>
       </Paper>
       {tab === 0 && <InspectionTab {...feedback} />}
       {tab === 1 && <MaterialReleaseTab {...feedback} />}
       {tab === 2 && <QualityRecordsTab />}
+      {tab === 3 && <InspectionMaterialsTab {...feedback} />}
+      {tab === 4 && <QualityDashboards />}
     </Stack>
   );
 }

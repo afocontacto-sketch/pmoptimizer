@@ -81,7 +81,7 @@ export default function ProjectManagement({ role = "Supervisor" }: { role?: stri
   });
   const actualCost = completed.reduce((total, order) => total +
     orderTimeTotals(order.id, timeEntries, nowMs).laborCost +
-    order.consumedMaterials.reduce((sum, item) => sum + item.quantity * (item.unitCost ?? 0), 0), 0);
+    (order.consumedMaterials ?? []).reduce((sum, item) => sum + item.quantity * (item.unitCost ?? 0), 0), 0);
   const pmMonthlyTotals = useMemo(() => {
     const totals = new Map<string, { contract: string; year: string; month: string; calls: number; completed: number; cost: number }>();
     for (const call of calls) {
@@ -94,7 +94,7 @@ export default function ProjectManagement({ role = "Supervisor" }: { role?: stri
       if (order?.status === "Cerrada") {
         current.completed += 1;
         current.cost += orderTimeTotals(order.id, timeEntries, nowMs).laborCost +
-          order.consumedMaterials.reduce((sum, item) => sum + item.quantity * (item.unitCost ?? 0), 0);
+          (order.consumedMaterials ?? []).reduce((sum, item) => sum + item.quantity * (item.unitCost ?? 0), 0);
       }
       totals.set(key, current);
     }
@@ -218,7 +218,7 @@ export default function ProjectManagement({ role = "Supervisor" }: { role?: stri
               const order = orders.find((item) => item.plannedCallId === call.id);
               const orderCost = order
                 ? orderTimeTotals(order.id, timeEntries, nowMs).laborCost +
-                  order.consumedMaterials.reduce((sum, item) => sum + item.quantity * (item.unitCost ?? 0), 0)
+                  (order.consumedMaterials ?? []).reduce((sum, item) => sum + item.quantity * (item.unitCost ?? 0), 0)
                 : 0;
               return (
                 <TableRow key={call.id}>

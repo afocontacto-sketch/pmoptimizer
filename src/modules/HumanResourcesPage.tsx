@@ -23,6 +23,11 @@ import {
 import { Delete as DeleteIcon, Edit as EditIcon } from "@mui/icons-material";
 import { makeFinanceId, readFinanceState, readFinanceList, saveFinanceState } from "./financeData";
 import type { FinanceAccount, JournalEntry } from "./financeData";
+import { payslipDoc } from "../components/print/templates/payslipDoc";
+import { printDocument } from "../components/print/printDocument";
+import { can } from "../app/permissions";
+import type { Role } from "../app/roles";
+import { recalculatePayrollRun } from "./payrollRecalc";
 
 export const hrEmployeesStorageKey = keys.hrEmployees;
 export const payrollRunsStorageKey = keys.payrollRuns;
@@ -61,7 +66,7 @@ export type HrContract = {
   description: string;
   createdAt: string;
 };
-type PayrollLine = {
+export type PayrollLine = {
   employeeId: string;
   employee: string;
   gross: number;
@@ -69,7 +74,7 @@ type PayrollLine = {
   net: number;
   allocations: { contract: string; amount: number }[];
 };
-type PayrollRun = {
+export type PayrollRun = {
   id: string;
   period: string;
   createdAt: string;
@@ -193,7 +198,29 @@ function payrollEntry(run: PayrollRun, accounts: FinanceAccount[]): JournalEntry
   };
 }
 
-export default function HumanResourcesPage() {
+function buildPayrollLines(employees: Employee[], indirectContracts: ProjectContract[]): PayrollLine[] {
+  return employees.map((employee) => {
+    const gross = employee.monthlySalary;
+    const deductions = Math.round(gross * (employee.deductionPercent ?? 20) / 100);
+    const activeContracts = employee.direct
+      ? allocationContracts(employee, indirectContracts).slice(0, 1)
+      : allocationContracts(employee, indirectContracts);
+    const indirectShare = activeContracts.length ? Math.floor(gross / activeContracts.length) : gross;
+    let indirectAllocated = 0;
+    const allocations = employee.direct
+      ? [{ contract: employee.contractCode, amount: gross }]
+      : activeContracts.length
+        ? activeContracts.map((contract, index) => {
+          const amount = index === activeContracts.length - 1 ? gross - indirectAllocated : indirectShare;
+          indirectAllocated += amount;
+          return { contract: contract.code, amount };
+        })
+        : [{ contract: "GASTO-EMPRESA", amount: gross }];
+    return { employeeId: employee.id, employee: employee.name, gross, deductions, net: gross - deductions, allocations };
+});
+}
+
+export default function HumanResourcesPage({ user = "", role = "Administrador" }: { user?: string; role?: Role }) {
   const [employees, setEmployees] = useState(readHrEmployees);
   const [contracts] = useState(readProjectContracts);
   const [hrContracts, setHrContracts] = useState(readHrContracts);
@@ -395,25 +422,7 @@ export default function HumanResourcesPage() {
       setError("Agrega colaboradores antes de generar la nómina.");
       return;
     }
-    const lines: PayrollLine[] = employees.map((employee) => {
-      const gross = employee.monthlySalary;
-      const deductions = Math.round(gross * (employee.deductionPercent ?? 20) / 100);
-      const activeContracts = employee.direct
-        ? allocationContracts(employee, indirectContracts).slice(0, 1)
-        : allocationContracts(employee, indirectContracts);
-      const indirectShare = activeContracts.length ? Math.floor(gross / activeContracts.length) : gross;
-      let indirectAllocated = 0;
-      const allocations = employee.direct
-        ? [{ contract: employee.contractCode, amount: gross }]
-        : activeContracts.length
-          ? activeContracts.map((contract, index) => {
-            const amount = index === activeContracts.length - 1 ? gross - indirectAllocated : indirectShare;
-            indirectAllocated += amount;
-            return { contract: contract.code, amount };
-          })
-          : [{ contract: "GASTO-EMPRESA", amount: gross }];
-      return { employeeId: employee.id, employee: employee.name, gross, deductions, net: gross - deductions, allocations };
-    });
+    const lines = buildPayrollLines(employees, indirectContracts);
     const run: PayrollRun = {
       id: makeFinanceId("NOM"),
       period,
@@ -491,6 +500,30 @@ export default function HumanResourcesPage() {
       console.error("No se pudo registrar el pago de nómina.", cause);
       setError("No se pudo guardar el pago de nómina.");
     }
+  };
+
+  const recalculateRun = (run: PayrollRun) => {
+    const result = recalculatePayrollRun(run.id, buildPayrollLines(readHrEmployees(), indirectContracts), { user, role }, payrollEntry);
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    setRuns(readList<PayrollRun>(payrollRunsStorageKey, []));
+    setError("");
+    setMessage(`Liquidación ${run.period} recalculada: asiento de reverso y asiento nuevo registrados.`);
+  };
+
+  const printPayslip = () => {
+    if (!activeSlipRun || !selectedSlipLine) return;
+    printDocument(payslipDoc({
+      period: activeSlipRun.period, status: activeSlipRun.status, employer: "PMOptimizer · Empresa demo",
+      employeeName: selectedSlipLine.employee, employeeId: selectedSlipLine.employeeId,
+      position: selectedSlipEmployee?.position, contractNumber: selectedSlipEmployee?.employmentContractNumber,
+      contractType: selectedSlipEmployee?.contractType,
+      schedule: selectedSlipEmployee?.workSchedule || (selectedSlipEmployee ? `${selectedSlipEmployee.hoursPerMonth} horas/mes` : undefined),
+      contractStart: selectedSlipEmployee?.contractStart, workplace: selectedSlipEmployee?.workplace,
+      gross: selectedSlipLine.gross, deductions: selectedSlipLine.deductions, net: selectedSlipLine.net,
+    })).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : "No se pudo imprimir la liquidación."));
   };
 
   const selectedSlipEmployeeId = slipEmployeeId || employees[0]?.id || "";
@@ -639,7 +672,7 @@ export default function HumanResourcesPage() {
           <Paper key={run.id} variant="outlined" sx={{ p: 2, mb: 2 }}>
             <Stack direction={{ xs: "column", sm: "row" }} sx={{ justifyContent: "space-between", alignItems: { sm: "center" }, gap: 1 }}>
               <Typography sx={{ fontWeight: 700 }}>{run.period} · Bruto {money(run.gross)} · Descuentos {money(run.deductions)} · Líquido {money(run.net)}</Typography>
-              <Stack direction="row" spacing={1}><Chip label={run.status} color={run.status === "Pagada" ? "success" : "warning"} /><Button disabled={run.status === "Pagada"} onClick={() => payRun(run)}>Registrar pago</Button></Stack>
+              <Stack direction="row" spacing={1}><Chip label={run.status} color={run.status === "Pagada" ? "success" : "warning"} /><Button disabled={run.status === "Pagada"} onClick={() => payRun(run)}>Registrar pago</Button>{run.status === "Pendiente de pago" && can(role, "payroll.recalculate") && <Button onClick={() => recalculateRun(run)}>Recalcular</Button>}</Stack>
             </Stack>
             <Table size="small"><TableHead><TableRow><TableCell>Colaborador</TableCell><TableCell>Imputación (WBS/contrato)</TableCell><TableCell align="right">Costo bruto</TableCell><TableCell align="right">Líquido</TableCell></TableRow></TableHead><TableBody>{run.lines.map((line) => <TableRow key={line.employeeId}><TableCell>{line.employee}</TableCell><TableCell>{line.allocations.map((item) => `${item.contract}: ${money(item.amount)}`).join(" · ")}</TableCell><TableCell align="right">{money(line.gross)}</TableCell><TableCell align="right">{money(line.net)}</TableCell></TableRow>)}</TableBody></Table>
           </Paper>
@@ -666,7 +699,7 @@ export default function HumanResourcesPage() {
                 <Typography variant="subtitle1">Período: {activeSlipRun.period}</Typography>
                 <Typography variant="caption" color="text.secondary">Documento de demostración · sin validez laboral ni previsional</Typography>
               </Box>
-              <Button className="payslip-print-button" variant="outlined" onClick={() => window.print()}>Imprimir</Button>
+              <Button className="payslip-print-button" variant="outlined" onClick={printPayslip}>Imprimir</Button>
             </Stack>
             <Grid container spacing={2} sx={{ mb: 2 }}>
               <Grid size={{ xs: 12, sm: 6 }}>

@@ -1,7 +1,7 @@
 import { Card, CardContent, Typography } from "@mui/material";
 import { BarChart } from "@mui/x-charts/BarChart";
 
-export type BarSeries = { label: string; data: number[]; color?: string };
+export type BarSeries = { label: string; data: Array<number | null>; color?: string; stack?: string };
 
 export type BarChartCardProps = {
   title: string;
@@ -32,7 +32,7 @@ export function BarChartCard({ title, categories, series, valueFormatter, highli
         <BarChart
           height={height}
           xAxis={[{ scaleType: "band", data: categories, colorMap }]}
-          series={series.map((s) => ({ label: s.label, data: s.data, color: s.color, valueFormatter: formatter }))}
+          series={series.map((s) => ({ label: s.label, data: s.data, color: s.color, stack: s.stack, valueFormatter: formatter }))}
         />
       </CardContent>
     </Card>

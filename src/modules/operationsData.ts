@@ -3,6 +3,7 @@ import type { Role } from "../app/roles";
 import { keys } from "../data/keys";
 import { demoContract } from "../data/contracts";
 import type { Contract } from "../data/contracts";
+import { isPickableLocation, isTransferRef } from "../data/stock";
 import type { StockBin } from "../data/stock";
 import { readJson, runAtomic, updateJson } from "../data/storage";
 import { orderTimeTotals } from "../data/workOrders";
@@ -13,16 +14,16 @@ import type { PurchaseOrder } from "./supplyData";
 
 // Lógica compartida de producción, técnico, almacén y calidad.
 
-export type ReservedPick = { binId: string; code: string; quantity: number };
 export type StockMovementType =
   | "Recepción OC"
-  | "Reserva picking"
-  | "Liberación picking"
+  | "Salida picking OT"
   | "Liberación de calidad"
   | "Ubicación"
-  | "Consumo OT"
   | "Ajuste inventario"
-  | "Traslado";
+  | "Traslado"
+  | "Traspaso emitido"
+  | "Traspaso recibido"
+  | "Diferencia traspaso";
 
 export type StockMovement = {
   id: string;
@@ -36,9 +37,8 @@ export type StockMovement = {
   user: string;
 };
 
-// Campos de ejecución que el modelo de data/ aún no define (reservas de picking, hasta E4.2); se completan al leer.
+// Campos de ejecución que el modelo de data/ aún no define; se completan al leer.
 export type RuntimeFields = {
-  reservedPicks?: ReservedPick[];
   supervisorClosedBy: string | null;
 };
 export type WorkOrder = BaseWorkOrder & RuntimeFields;
@@ -131,7 +131,7 @@ export function readStock(): StockBin[] {
     readList<StockBin>(keys.warehouseBins),
     readStoredList<PurchaseOrder>(purchaseOrdersStorageKey),
   ).map((bin) =>
-    bin.status === "En tránsito"
+    bin.status === "En tránsito" && !isTransferRef(bin.reference)
       ? { ...bin, warehouse: "Recepciones", location: "TRANSITO", reference: bin.reference ?? "" }
       : bin,
   );
@@ -238,9 +238,7 @@ export function makeMovement(
   };
 }
 
-export function isPickableLocation(location: string): boolean {
-  return !["REC-UBICAR", "REC-CALIDAD", "TRANSITO"].includes(location.toUpperCase());
-}
+export { isPickableLocation };
 
 export function aggregateStockBins(bins: StockBin[]): StockBinGroup[] {
   const grouped = new Map<string, StockBinGroup>();
@@ -323,7 +321,7 @@ export function releaseQualityLot(binId: string, role: Role, user: string): Acti
   const bin = readStock().find((item) => item.id === binId);
   if (!bin || bin.status !== "Bloqueado calidad") return null;
   writeStock((current) => current.map((item) => item.id === binId
-    ? { ...item, status: "Libre utilización", location: "REC-UBICAR" }
+    ? { ...item, status: "Libre utilización", location: "REC-UBICAR", releasedAt: new Date().toISOString(), releasedBy: user }
     : item));
   writeMovements((current) => [makeMovement(
     "Liberación de calidad",

@@ -566,7 +566,7 @@ function AppLayout({ session, onLogout }: AppLayoutProps) {
             <Route path="/almacen" element={<RoleRoute role={session.role} path="/almacen"><WarehousePage user={session.user} role={session.role} /></RoleRoute>} />
             <Route path="/compras" element={<RoleRoute role={session.role} path="/compras"><PurchasingPage role={session.role} user={session.user} /></RoleRoute>} />
             <Route path="/contabilidad" element={<RoleRoute role={session.role} path="/contabilidad"><AccountingPage role={session.role} /></RoleRoute>} />
-            <Route path="/rrhh" element={<RoleRoute role={session.role} path="/rrhh"><HumanResourcesPage /></RoleRoute>} />
+            <Route path="/rrhh" element={<RoleRoute role={session.role} path="/rrhh"><HumanResourcesPage user={session.user} role={session.role} /></RoleRoute>} />
             <Route path="/calidad" element={<RoleRoute role={session.role} path="/calidad"><QualityPage user={session.user} role={session.role} /></RoleRoute>} />
             <Route path="/ingenieria" element={<RoleRoute role={session.role} path="/ingenieria"><IndustrialRoutes user={session.user} /></RoleRoute>} />
             <Route path="/planes-mantenimiento" element={<RoleRoute role={session.role} path="/planes-mantenimiento"><MaintenancePlanning role={session.role} /></RoleRoute>} />
