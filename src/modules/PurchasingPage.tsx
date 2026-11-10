@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { nextDocNumber } from "../data/docNumbering";
 import type { FormEvent } from "react";
 import {
   Alert,
@@ -122,7 +123,13 @@ export default function PurchasingPage({ role, user }: { role: RoleName; user: s
       return;
     }
 
-    const orderId = makeSupplyId("OC");
+    let orderId: string;
+    try {
+      orderId = nextDocNumber("31", (candidate) => orders.some((item) => item.id === candidate));
+    } catch (numberError) {
+      setError(numberError instanceof Error ? numberError.message : "No se pudo numerar la OC.");
+      return;
+    }
     const today = new Date().toISOString().split("T")[0];
     const order: PurchaseOrder = {
       id: orderId,

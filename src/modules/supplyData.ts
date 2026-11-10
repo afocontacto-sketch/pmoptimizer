@@ -1,7 +1,9 @@
-export const purchaseRequestsStorageKey = "pmoptimizer-purchase-requests";
-export const purchaseOrdersStorageKey = "pmoptimizer-purchase-orders";
-export const suppliersStorageKey = "pmoptimizer-suppliers";
-export const quotationsStorageKey = "pmoptimizer-quotations";
+import { keys } from "../data/keys";
+
+export const purchaseRequestsStorageKey = keys.purchaseRequests;
+export const purchaseOrdersStorageKey = keys.purchaseOrders;
+export const suppliersStorageKey = keys.suppliers;
+export const quotationsStorageKey = keys.quotations;
 
 export type SupplierMaster = {
   id: string;

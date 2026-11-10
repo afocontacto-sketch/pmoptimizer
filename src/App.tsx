@@ -1,3 +1,4 @@
+import { backupFilePrefix, backupFormat, keys, KEY_PREFIX, SCHEMA } from "./data/keys";
 import { Fragment, useEffect, useState } from "react";
 import type { ChangeEvent, FormEvent, ReactNode } from "react";
 import {
@@ -67,6 +68,9 @@ import PurchasingPage from "./modules/PurchasingPage";
 import ProjectManagement from "./modules/ProjectManagement";
 import AccountingPage from "./modules/AccountingPage";
 import HumanResourcesPage from "./modules/HumanResourcesPage";
+import ClientsPage from "./modules/ClientsPage";
+import QualityPage from "./modules/QualityPage";
+import ProductionPage from "./modules/ProductionPage";
 import { equipmentStorageKey, readEquipmentMaster } from "./modules/masterData";
 import type { EquipmentMaster } from "./modules/masterData";
 
@@ -123,7 +127,7 @@ type MaterialMasterRecord = {
   unit: string;
 };
 
-const materialsStorageKey = "pmoptimizer-material-master";
+const materialsStorageKey = keys.materialMaster;
 
 type EquipmentContractOption = { code: string; client: string };
 
@@ -132,7 +136,7 @@ function readEquipmentContracts(): EquipmentContractOption[] {
     ["CT1234", { code: "CT1234", client: "Fiat Chile" }],
   ]);
   try {
-    const raw = localStorage.getItem("pmoptimizer-clients");
+    const raw = localStorage.getItem(keys.clients);
     const parsed: unknown = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) throw new Error("El maestro de clientes no tiene formato de lista.");
     for (const item of parsed) {
@@ -164,7 +168,7 @@ function getMaterialRows(): MaterialRow[] {
   type Balance = Pick<MaterialRow, "code" | "name" | "stock" | "available" | "quality" | "inTransit" | "unit">;
   let balances: Map<string, Balance> | null = null;
   try {
-    const raw = localStorage.getItem("pmoptimizer-warehouse-bins");
+    const raw = localStorage.getItem(keys.warehouseBins);
     if (raw) {
       const parsed: unknown = JSON.parse(raw);
       if (!Array.isArray(parsed)) {
@@ -266,14 +270,15 @@ type Session = {
 type Role = "Administrador" | "Supervisor" | "Planificador" | "PM Proyecto" | "Compras" | "Contabilidad" | "Producción" | "Industrial" | "Ingeniería" | "Calidad";
 
 type AppDataBackup = {
-  format: "pmoptimizer-local-data";
+  format: typeof backupFormat;
   version: 1;
+  schema: typeof SCHEMA;
   exportedAt: string;
   data: Record<string, string>;
 };
 
-const appDataPrefix = "pmoptimizer-";
-const sessionStorageKey = "pmoptimizer-session";
+const appDataPrefix = KEY_PREFIX;
+const sessionStorageKey = keys.session;
 
 function getAppDataBackup(): AppDataBackup {
   const data: Record<string, string> = {};
@@ -284,13 +289,14 @@ function getAppDataBackup(): AppDataBackup {
       if (value !== null) data[key] = value;
     }
   }
-  return { format: "pmoptimizer-local-data", version: 1, exportedAt: new Date().toISOString(), data };
+  return { format: backupFormat, version: 1, schema: SCHEMA, exportedAt: new Date().toISOString(), data };
 }
 
 function isAppDataBackup(value: unknown): value is AppDataBackup {
   if (typeof value !== "object" || value === null ||
-    !("format" in value) || value.format !== "pmoptimizer-local-data" ||
+    !("format" in value) || value.format !== backupFormat ||
     !("version" in value) || value.version !== 1 ||
+    !("schema" in value) || value.schema !== SCHEMA ||
     !("data" in value) || typeof value.data !== "object" || value.data === null || Array.isArray(value.data)) {
     return false;
   }
@@ -316,19 +322,19 @@ const demoAccounts: { username: string; password: string; role: Role }[] = [
 
 const roleModules: Record<Role, string[]> = {
   Administrador: ["*"],
-  Supervisor: ["/personal", "/ordenes", "/almacen"],
-  Planificador: ["/dashboard", "/planning", "/planes-mantenimiento", "/supply", "/pm"],
+  Supervisor: ["/personal", "/produccion", "/almacen"],
+  Planificador: ["/dashboard", "/planning", "/planes-mantenimiento", "/supply", "/pm", "/produccion"],
   "PM Proyecto": ["/dashboard", "/planning", "/planes-mantenimiento", "/compras", "/pm"],
   Compras: ["/dashboard", "/clientes", "/materiales", "/compras", "/supply", "/almacen"],
   Contabilidad: ["/dashboard", "/clientes", "/contabilidad", "/rrhh"],
-  Producción: ["/dashboard", "/materiales", "/ordenes", "/almacen", "/planes-mantenimiento", "/planning", "/supply"],
-  Industrial: ["/dashboard", "/materiales", "/ordenes", "/almacen", "/hojas-ruta", "/planes-mantenimiento", "/planning", "/supply"],
-  Ingeniería: ["/dashboard", "/materiales", "/ordenes", "/almacen", "/planes-mantenimiento", "/planning"],
+  Producción: ["/dashboard", "/materiales", "/produccion", "/almacen", "/planes-mantenimiento", "/planning", "/supply"],
+  Industrial: ["/dashboard", "/materiales", "/produccion", "/almacen", "/ingenieria", "/hojas-ruta", "/planes-mantenimiento", "/planning", "/supply"],
+  Ingeniería: ["/dashboard", "/materiales", "/produccion", "/almacen", "/ingenieria", "/planes-mantenimiento", "/planning"],
   Calidad: ["/dashboard", "/almacen", "/calidad"],
 };
 
 function readSession(): Session | null {
-  const raw = localStorage.getItem("pmoptimizer-session");
+  const raw = localStorage.getItem(keys.session);
   if (!raw) return null;
 
   try {
@@ -349,7 +355,7 @@ function readSession(): Session | null {
     console.warn("La sesión guardada no se pudo leer y será eliminada.", error);
   }
 
-  localStorage.removeItem("pmoptimizer-session");
+  localStorage.removeItem(keys.session);
   return null;
 }
 
@@ -358,9 +364,9 @@ function App() {
 
   useEffect(() => {
     if (session) {
-      localStorage.setItem("pmoptimizer-session", JSON.stringify(session));
+      localStorage.setItem(keys.session, JSON.stringify(session));
     } else {
-      localStorage.removeItem("pmoptimizer-session");
+      localStorage.removeItem(keys.session);
     }
   }, [session]);
 
@@ -646,22 +652,23 @@ function AppLayout({ session, onLogout }: AppLayoutProps) {
         <Box sx={{ p: 3 }}>
           <Routes>
             <Route path="/dashboard" element={<RoleRoute role={session.role} path="/dashboard"><DashboardPage /></RoleRoute>} />
-            <Route path="/clientes" element={<RoleRoute role={session.role} path="/clientes"><ClientesPage /></RoleRoute>} />
+            <Route path="/clientes" element={<RoleRoute role={session.role} path="/clientes"><ClientsPage /></RoleRoute>} />
             <Route path="/materiales" element={<RoleRoute role={session.role} path="/materiales"><MaterialesPage role={session.role} /></RoleRoute>} />
-            <Route path="/ordenes" element={<RoleRoute role={session.role} path="/ordenes"><WorkOrders user={session.user} role={session.role} /></RoleRoute>} />
+            <Route path="/produccion" element={<RoleRoute role={session.role} path="/produccion"><ProductionPage user={session.user} role={session.role} /></RoleRoute>} />
             <Route path="/personal" element={session.role === "Supervisor" ? <WorkOrders user={session.user} role={session.role} defaultTab={6} scope="team" /> : <Navigate to="/dashboard" replace />} />
             <Route path="/almacen" element={<RoleRoute role={session.role} path="/almacen"><WorkOrders user={session.user} role={session.role} defaultTab={2} scope="warehouse" /></RoleRoute>} />
             <Route path="/compras" element={<RoleRoute role={session.role} path="/compras"><PurchasingPage role={session.role} user={session.user} /></RoleRoute>} />
             <Route path="/contabilidad" element={<RoleRoute role={session.role} path="/contabilidad"><AccountingPage role={session.role} /></RoleRoute>} />
             <Route path="/rrhh" element={<RoleRoute role={session.role} path="/rrhh"><HumanResourcesPage /></RoleRoute>} />
-            <Route path="/calidad" element={<RoleRoute role={session.role} path="/calidad"><WorkOrders user={session.user} role={session.role} defaultTab={4} scope="quality" /></RoleRoute>} />
+            <Route path="/calidad" element={<RoleRoute role={session.role} path="/calidad"><QualityPage /></RoleRoute>} />
+            <Route path="/ingenieria" element={<RoleRoute role={session.role} path="/ingenieria"><IndustrialRoutes user={session.user} /></RoleRoute>} />
             <Route path="/hojas-ruta" element={<RoleRoute role={session.role} path="/hojas-ruta"><IndustrialRoutes user={session.user} /></RoleRoute>} />
             <Route path="/planes-mantenimiento" element={<RoleRoute role={session.role} path="/planes-mantenimiento"><MaintenancePlanning role={session.role} /></RoleRoute>} />
             <Route path="/planning" element={<RoleRoute role={session.role} path="/planning"><MaintenancePlanning role={session.role} /></RoleRoute>} />
             <Route path="/supply" element={<RoleRoute role={session.role} path="/supply"><SupplyPage /></RoleRoute>} />
             <Route path="/pm" element={<RoleRoute role={session.role} path="/pm"><ProjectManagement role={session.role} /></RoleRoute>} />
             <Route path="/respaldo" element={<RoleRoute role={session.role} path="/respaldo"><DataBackupPage /></RoleRoute>} />
-            <Route path="/" element={<Navigate to={session.role === "Supervisor" ? "/ordenes" : "/dashboard"} replace />} />
+            <Route path="/" element={<Navigate to={session.role === "Supervisor" ? "/produccion" : "/dashboard"} replace />} />
             <Route path="*" element={<ModulePage title="Página no encontrada" />} />
           </Routes>
         </Box>
@@ -681,7 +688,7 @@ function DataBackupPage() {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `pmoptimizer-respaldo-${new Date().toISOString().slice(0, 10)}.json`;
+      anchor.download = `${backupFilePrefix}-${new Date().toISOString().slice(0, 10)}.json`;
       anchor.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
       setError("");
@@ -705,6 +712,9 @@ function DataBackupPage() {
     }
     try {
       const parsed: unknown = JSON.parse(await file.text());
+      if (typeof parsed === "object" && parsed !== null && (!("schema" in parsed) || parsed.schema !== SCHEMA)) {
+        throw new Error(`Respaldo rechazado: su versión de esquema no es compatible (se requiere "${SCHEMA}").`);
+      }
       if (!isAppDataBackup(parsed)) {
         throw new Error("El archivo no es un respaldo válido de PMOptimizer.");
       }
@@ -778,17 +788,18 @@ function Sidebar({ role, onNavigate }: { role: Role; onNavigate?: () => void }) 
     { label: "Clientes", icon: <People />, to: "/clientes" },
     { label: "Materiales", icon: <Inventory2 />, to: "/materiales" },
     { label: "Planning", icon: <Build />, to: "/planning" },
+    { label: "Producción", icon: <Build />, to: "/produccion" },
+    { label: "Ingeniería", icon: <Build />, to: "/ingenieria" },
     { label: "Supply · MRP", icon: <Inventory2 />, to: "/supply" },
     { label: "PM Proyecto", icon: <Timeline />, to: "/pm" },
     { label: "Hojas de ruta", icon: <Build />, to: "/hojas-ruta" },
     { label: "Personal", icon: <People />, to: "/personal" },
-    { label: "Órdenes", icon: <Build />, to: "/ordenes" },
     { label: "Almacén", icon: <Inventory2 />, to: "/almacen" },
     { label: "Compras", icon: <ShoppingCart />, to: "/compras" },
     { label: "Contabilidad", icon: <Timeline />, to: "/contabilidad" },
     { label: "Recursos humanos", icon: <People />, to: "/rrhh" },
-    { label: "Respaldo de datos", icon: <Inventory2 />, to: "/respaldo" },
     { label: "Calidad", icon: <WarningAmber />, to: "/calidad" },
+    { label: "Respaldo de datos", icon: <Inventory2 />, to: "/respaldo" },
   ].filter((item) => (item.to !== "/personal" || role === "Supervisor") &&
     (item.to !== "/respaldo" || role === "Administrador") &&
     (roleModules[role].includes("*") || roleModules[role].includes(item.to)));
@@ -1032,159 +1043,6 @@ function DashboardPage() {
           </Paper>
         </Grid>
       </Grid>
-    </Box>
-  );
-}
-
-function ClientesPage() {
-  type ClientRecord = (typeof mockClients)[number] & {
-    contractCode?: string;
-    wbs?: string[];
-    attachment?: { name: string; dataUrl: string };
-  };
-  const storageKey = "pmoptimizer-clients";
-  const [clients, setClients] = useState<ClientRecord[]>(() => {
-    try {
-      const saved = localStorage.getItem(storageKey);
-      if (!saved) return mockClients;
-      const parsed: unknown = JSON.parse(saved);
-      return Array.isArray(parsed) ? parsed as ClientRecord[] : mockClients;
-    } catch (error) {
-      console.warn("No se pudieron leer los clientes guardados.", error);
-      return mockClients;
-    }
-  });
-  const [showForm, setShowForm] = useState(false);
-  const [clientDraft, setClientDraft] = useState({ name: "", sector: "", contractCode: "", wbs: "", amount: "" });
-  const [attachment, setAttachment] = useState<ClientRecord["attachment"]>();
-  const [clientError, setClientError] = useState("");
-
-  const saveClient = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const amount = Number(clientDraft.amount);
-    const wbs = clientDraft.wbs.split(",").map((value) => value.trim()).filter(Boolean);
-    if (!clientDraft.name.trim() || !clientDraft.sector.trim() || !clientDraft.contractCode.trim() ||
-      !wbs.length || !Number.isFinite(amount) || amount < 0 || !attachment ||
-      clients.some((client) => client.contractCode?.toLowerCase() === clientDraft.contractCode.trim().toLowerCase())) {
-      setClientError("Completa todos los campos, indica códigos WBS válidos y asegúrate de que el código de contrato no esté duplicado.");
-      return;
-    }
-    const next = [...clients, {
-      id: `CLI-${Date.now()}`,
-      name: clientDraft.name.trim(),
-      sector: clientDraft.sector.trim(),
-      status: "Activo",
-      amount,
-      contractCode: clientDraft.contractCode.trim(),
-      wbs,
-      attachment,
-    }];
-    try {
-      localStorage.setItem(storageKey, JSON.stringify(next));
-      setClients(next);
-      setShowForm(false);
-      setClientDraft({ name: "", sector: "", contractCode: "", wbs: "", amount: "" });
-      setAttachment(undefined);
-      setClientError("");
-    } catch (error) {
-      console.error("No se pudo guardar el nuevo cliente.", error);
-      setClientError("No se pudo guardar el cliente. Verifica el espacio disponible del navegador.");
-    }
-  };
-
-  return (
-    <Box>
-      <Stack direction={{ xs: "column", sm: "row" }} sx={{ justifyContent: "space-between", alignItems: { xs: "flex-start", sm: "center" }, mb: 3 }} spacing={2}>
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>Clientes</Typography>
-        <Button variant="contained" startIcon={<Add />} onClick={() => setShowForm((value) => !value)} sx={{ borderRadius: 2, textTransform: "none" }}>
-          {showForm ? "Cancelar" : "Nuevo cliente"}
-        </Button>
-      </Stack>
-      {clientError && <Alert severity="error" sx={{ mb: 2 }}>{clientError}</Alert>}
-      {showForm && (
-        <Paper component="form" onSubmit={saveClient} sx={{ p: 3, mb: 3 }}>
-          <Typography variant="h6" sx={{ mb: 2 }}>Cliente, contrato y WBS</Typography>
-          <Grid container spacing={2}>
-            <Grid size={{ xs: 12, md: 4 }}><TextField label="Razón social" value={clientDraft.name} onChange={(event) => setClientDraft((current) => ({ ...current, name: event.target.value }))} required fullWidth /></Grid>
-            <Grid size={{ xs: 12, md: 3 }}><TextField label="Sector" value={clientDraft.sector} onChange={(event) => setClientDraft((current) => ({ ...current, sector: event.target.value }))} required fullWidth /></Grid>
-            <Grid size={{ xs: 12, md: 2 }}><TextField label="Código de contrato" value={clientDraft.contractCode} onChange={(event) => setClientDraft((current) => ({ ...current, contractCode: event.target.value }))} required fullWidth /></Grid>
-            <Grid size={{ xs: 12, md: 3 }}><TextField label="Monto anual CLP" type="number" value={clientDraft.amount} onChange={(event) => setClientDraft((current) => ({ ...current, amount: event.target.value }))} required fullWidth /></Grid>
-            <Grid size={{ xs: 12, md: 8 }}><TextField label="Estructura WBS (códigos separados por coma)" value={clientDraft.wbs} onChange={(event) => setClientDraft((current) => ({ ...current, wbs: event.target.value }))} helperText="Ejemplo: CT-001-PRE, CT-001-COR, CT-001-MAT" required fullWidth /></Grid>
-            <Grid size={{ xs: 12, md: 4 }}>
-              <Button component="label" variant="outlined" fullWidth sx={{ height: 56 }}>
-                {attachment?.name ?? "Adjuntar contrato (máx. 2 MB)"}
-                <input hidden type="file" accept=".pdf,.doc,.docx,image/*" onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (!file) return;
-                  if (file.size > 2 * 1024 * 1024) {
-                    setClientError("El archivo supera el límite local de 2 MB.");
-                    event.target.value = "";
-                    return;
-                  }
-                  const reader = new FileReader();
-                  reader.onload = () => {
-                    if (typeof reader.result === "string") {
-                      setAttachment({ name: file.name, dataUrl: reader.result });
-                      setClientError("");
-                    }
-                  };
-                  reader.onerror = () => setClientError("No se pudo leer el archivo de contrato.");
-                  reader.readAsDataURL(file);
-                }} />
-              </Button>
-            </Grid>
-            <Grid size={{ xs: 12 }}><Button type="submit" variant="contained">Crear cliente y contrato</Button></Grid>
-          </Grid>
-        </Paper>
-      )}
-
-      <Paper sx={{ p: 2, borderRadius: 3, overflowX: "auto", border: "1px solid rgba(148,163,184,0.15)" }}>
-        <Box component="table" sx={{ width: "100%", minWidth: 850, borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              <TableHeadCell>Cliente</TableHeadCell>
-              <TableHeadCell>Sector</TableHeadCell>
-              <TableHeadCell>Estado</TableHeadCell>
-              <TableHeadCell align="right">Monto anual</TableHeadCell>
-              <TableHeadCell>Contrato / WBS</TableHeadCell>
-            </tr>
-          </thead>
-          <tbody>
-            {clients.map((client) => (
-              <tr key={client.id}>
-                <TableBodyCell>
-                  <Box>
-                    <Typography sx={{ fontWeight: 700 }}>{client.name}</Typography>
-                    <Typography variant="caption" color="text.secondary">{client.id}</Typography>
-                  </Box>
-                </TableBodyCell>
-                <TableBodyCell>{client.sector}</TableBodyCell>
-                <TableBodyCell>
-                  <Chip
-                    label={client.status}
-                    color={client.status === "Activo" ? "success" : "warning"}
-                    size="small"
-                    sx={{ borderRadius: 1 }}
-                  />
-                </TableBodyCell>
-                <TableBodyCell align="right">
-                  <Typography sx={{ fontWeight: 700 }}>
-                    {new Intl.NumberFormat("es-CL", {
-                      style: "currency",
-                      currency: "CLP",
-                      maximumFractionDigits: 0,
-                    }).format(client.amount)}
-                  </Typography>
-                </TableBodyCell>
-                <TableBodyCell>
-                  {client.contractCode && <Typography sx={{ display: "block" }} variant="caption">Contrato: {client.contractCode} · WBS: {client.wbs?.join(", ")}</Typography>}
-                  {client.attachment && <Button size="small" component="a" href={client.attachment.dataUrl} download={client.attachment.name}>Descargar contrato</Button>}
-                </TableBodyCell>
-              </tr>
-            ))}
-          </tbody>
-        </Box>
-      </Paper>
     </Box>
   );
 }

@@ -1,3 +1,4 @@
+import { keys } from "../data/keys";
 import { useMemo, useState } from "react";
 import {
   Alert,
@@ -46,8 +47,8 @@ type StockBin = {
   reference?: string;
 };
 
-const stockStorageKey = "pmoptimizer-warehouse-bins";
-const workOrdersStorageKey = "pmoptimizer-work-orders";
+const stockStorageKey = keys.warehouseBins;
+const workOrdersStorageKey = keys.workOrders;
 const demoStock: StockBin[] = [
   { code: "MAT-114", status: "Libre utilización", quantity: 9 },
   { code: "MAT-114", status: "Bloqueado calidad", quantity: 5 },

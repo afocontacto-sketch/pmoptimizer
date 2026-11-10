@@ -1,4 +1,6 @@
-export const financeStateStorageKey = "pmoptimizer-finance-state";
+import { keys } from "../data/keys";
+
+export const financeStateStorageKey = keys.financeState;
 
 export type AccountType = "Activo" | "Pasivo" | "Patrimonio" | "Ingreso" | "Gasto";
 export type FinanceAccount = { code: string; name: string; type: AccountType };

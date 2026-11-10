@@ -1,3 +1,4 @@
+import { keys } from "../data/keys";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import {
@@ -54,7 +55,7 @@ function readMaterialOptions(): MaterialOption[] {
     { code: "MAT-880", name: "Soldadura ER70S-6", unit: "kilo", unitCost: 0 },
   ];
   try {
-    const raw = localStorage.getItem("pmoptimizer-warehouse-bins");
+    const raw = localStorage.getItem(keys.warehouseBins);
     if (!raw) return fallback;
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) {

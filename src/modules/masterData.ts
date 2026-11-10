@@ -1,4 +1,6 @@
-export const equipmentStorageKey = "pmoptimizer-equipment";
+import { keys } from "../data/keys";
+
+export const equipmentStorageKey = keys.equipment;
 
 export type EquipmentMaster = {
   code: string;

@@ -1,3 +1,5 @@
+import { keys } from "../data/keys";
+import { nextDocNumber, orderTypeSeries } from "../data/docNumbering";
 import { useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import {
@@ -174,7 +176,7 @@ const demoContracts: Contract[] = [{
 }];
 
 function readContracts(): Contract[] {
-  const savedClients = readStoredList<{ name: string; contractCode?: string; wbs?: string[] }>("pmoptimizer-clients");
+  const savedClients = readStoredList<{ name: string; contractCode?: string; wbs?: string[] }>(keys.clients);
   const configured: Contract[] = savedClients.flatMap((client) => {
     if (!client.contractCode) return [];
     const wbs = (client.wbs ?? []).map((code) => {
@@ -306,9 +308,9 @@ const initialStock: StockBin[] = [
   { id: "BIN-07", code: "MAT-422", name: "Rodamiento SKF 6205", warehouse: "Recepciones", location: "TRANSITO", status: "En tránsito", quantity: 8, reserved: 0, unit: "unidad", unitCost: 7800, reference: "OC-4502" },
 ];
 
-const ordersStorageKey = "pmoptimizer-work-orders-v2";
-const stockStorageKey = "pmoptimizer-warehouse-bins";
-const stockMovementStorageKey = "pmoptimizer-warehouse-movements";
+const ordersStorageKey = keys.workOrders;
+const stockStorageKey = keys.warehouseBins;
+const stockMovementStorageKey = keys.warehouseMovements;
 const typeLabels: Record<OrderType, string> = {
   PRE: "Preventivo",
   OVH: "Overhaul",
@@ -839,7 +841,13 @@ export default function WorkOrders({
     const technician = newOrder.technician
       ? technicianProfiles.find((item) => item.name === newOrder.technician) ?? technicianProfiles[0]
       : undefined;
-    const id = `OT-${2051 + orders.length}`;
+    let id: string;
+    try {
+      id = nextDocNumber(orderTypeSeries[newOrder.type], (candidate) => orders.some((item) => item.id === candidate));
+    } catch (numberError) {
+      setError(numberError instanceof Error ? numberError.message : "No se pudo numerar la OT.");
+      return;
+    }
     setOrders((current) => [...current, {
       id,
       contract: selectedContract.code,
@@ -888,7 +896,13 @@ export default function WorkOrders({
     const contract = contracts.find((item) => item.code === call.plan.contract) ?? contracts[0];
     const wbsElement = contract.wbs.find((item) => item.code === call.plan.wbs);
     const orderType = wbsElement?.type && wbsElement.type !== "ESPERA" ? wbsElement.type : "PRE";
-    const id = `OT-${2051 + orders.length}`;
+    let id: string;
+    try {
+      id = nextDocNumber(orderTypeSeries[orderType], (candidate) => orders.some((item) => item.id === candidate));
+    } catch (numberError) {
+      setError(numberError instanceof Error ? numberError.message : "No se pudo numerar la OT.");
+      return;
+    }
     setOrders((current) => [...current, {
       id,
       contract: contract.code,

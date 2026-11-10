@@ -1,3 +1,4 @@
+import { keys } from "../data/keys";
 import { useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import {
@@ -50,7 +51,7 @@ type PlannedCall = {
 };
 type ClientContract = { name: string; contractCode: string; wbs: string[] };
 
-const customFieldStorageKey = "pmoptimizer-maintenance-plan-fields";
+const customFieldStorageKey = keys.maintenancePlanFields;
 
 function readStored<T>(key: string, fallback: T): T {
   const raw = localStorage.getItem(key);
@@ -213,8 +214,8 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
     }
     return [...byCode.values()];
   }, [plans]);
-  const [clientContracts] = useState(() => readStored<ClientContract[]>("pmoptimizer-clients", []));
-  const [workOrders] = useState(() => readStored<{ plannedCallId?: string; status: string }[]>("pmoptimizer-work-orders", []));
+  const [clientContracts] = useState(() => readStored<ClientContract[]>(keys.clients, []));
+  const [workOrders] = useState(() => readStored<{ plannedCallId?: string; status: string }[]>(keys.workOrders, []));
   const [customFieldDefinitions, setCustomFieldDefinitions] = useState<CustomFieldDefinition[]>(
     () => readStored(customFieldStorageKey, []),
   );

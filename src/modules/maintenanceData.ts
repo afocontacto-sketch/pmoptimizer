@@ -1,3 +1,5 @@
+import { keys } from "../data/keys";
+
 export type CalendarUnit = "days" | "months" | "years";
 export type TriggerType = "calendar" | "kilometers" | "hours" | "first";
 export type MeterUnit = "kilometers" | "hours";
@@ -45,9 +47,9 @@ export type MaintenancePlan = {
   customFields?: Record<string, string>;
 };
 
-export const routeStorageKey = "pmoptimizer-maintenance-routes";
-export const planStorageKey = "pmoptimizer-maintenance-plans";
-export const maintenanceCallsStorageKey = "pmoptimizer-maintenance-calls";
+export const routeStorageKey = keys.maintenanceRoutes;
+export const planStorageKey = keys.maintenancePlans;
+export const maintenanceCallsStorageKey = keys.maintenanceCalls;
 
 export const sampleRoutes: RouteTemplate[] = [{
   id: "HR-VEH-001",

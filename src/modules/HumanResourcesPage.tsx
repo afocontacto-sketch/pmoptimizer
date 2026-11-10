@@ -1,3 +1,4 @@
+import { keys } from "../data/keys";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import {
@@ -22,10 +23,10 @@ import { Delete as DeleteIcon, Edit as EditIcon } from "@mui/icons-material";
 import { makeFinanceId, readFinanceState, readFinanceList, saveFinanceState } from "./financeData";
 import type { FinanceAccount, JournalEntry } from "./financeData";
 
-export const hrEmployeesStorageKey = "pmoptimizer-hr-employees";
-export const payrollRunsStorageKey = "pmoptimizer-payroll-runs";
-export const hrLeavesStorageKey = "pmoptimizer-hr-leaves";
-export const hrContractsStorageKey = "pmoptimizer-hr-contracts";
+export const hrEmployeesStorageKey = keys.hrEmployees;
+export const payrollRunsStorageKey = keys.payrollRuns;
+export const hrLeavesStorageKey = keys.hrLeaves;
+export const hrContractsStorageKey = keys.hrContracts;
 
 export type Employee = {
   id: string;
@@ -45,6 +46,7 @@ export type Employee = {
   contractCodes?: string[];
   supervisorId?: string;
   supervisorLogin?: string;
+  login?: string;
 };
 export type ProjectContract = { code: string; client: string; active: boolean; };
 export type HrContract = {
@@ -89,7 +91,7 @@ type EmployeeLeave = {
 };
 
 const demoEmployees: Employee[] = [
-  { id: "EMP-001", name: "Camila Rojas", position: "Técnica mecánica", contractType: "Indefinido", monthlySalary: 1100000, hoursPerMonth: 180, deductionPercent: 20, direct: true, contractCode: "CT1234", contractCodes: ["CT1234"], supervisorId: "EMP-002" },
+  { id: "EMP-001", name: "Camila Rojas", position: "Técnica mecánica", contractType: "Indefinido", monthlySalary: 1100000, hoursPerMonth: 180, deductionPercent: 20, direct: true, contractCode: "CT1234", contractCodes: ["CT1234"], supervisorId: "EMP-002", login: "tecnico" },
   { id: "EMP-002", name: "Diego Muñoz", position: "Supervisor de mantenimiento", contractType: "Indefinido", monthlySalary: 1450000, hoursPerMonth: 180, deductionPercent: 20, direct: false, contractCode: "", contractCodes: ["CT1234"], supervisorLogin: "supervisor" },
   { id: "EMP-003", name: "Paula Soto", position: "Administración", contractType: "Indefinido", monthlySalary: 1250000, hoursPerMonth: 180, deductionPercent: 20, direct: false, contractCode: "", contractCodes: ["CT1234"] },
 ];
@@ -140,7 +142,7 @@ export function readHrEmployees(): Employee[] {
 }
 
 export function readProjectContracts(): ProjectContract[] {
-  const clientContracts = readFinanceList<{ name: string; contractCode?: string }>("pmoptimizer-clients")
+  const clientContracts = readFinanceList<{ name: string; contractCode?: string }>(keys.clients)
     .flatMap((client) => client.contractCode
       ? [{ code: client.contractCode, client: client.name, active: true }]
       : []);

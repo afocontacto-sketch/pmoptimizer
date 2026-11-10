@@ -1,3 +1,5 @@
+import { keys } from "../data/keys";
+import { nextDocNumber } from "../data/docNumbering";
 import { useMemo, useState } from "react";
 import {
   Alert,
@@ -103,7 +105,7 @@ type StockMovement = {
   user: string;
 };
 
-const stockStorageKey = "pmoptimizer-warehouse-bins";
+const stockStorageKey = keys.warehouseBins;
 const demoStock: StockBin[] = [
   { code: "MAT-114", name: "Cinta aislante 3M", unit: "rollo", status: "Libre utilización", quantity: 9 },
   { code: "MAT-114", name: "Cinta aislante 3M", unit: "rollo", status: "Bloqueado calidad", quantity: 5 },
@@ -137,12 +139,12 @@ export default function SupplyPage() {
   const [selectedMaterial, setSelectedMaterial] = useState<MaterialOption | null>(null);
   const [error, setError] = useState("");
   const [pickingSessions, setPickingSessions] = useState<PickingSession[]>(() =>
-    readStoredList<PickingSession>("pmoptimizer-warehouse-picking"));
+    readStoredList<PickingSession>(keys.warehousePicking));
   const [openPickingDialog, setOpenPickingDialog] = useState(false);
   const [currentPickingOrder, setCurrentPickingOrder] = useState<string | null>(null);
   const [currentPickingMaterials, setCurrentPickingMaterials] = useState<PickingItem[]>([]);
   const [stockMovements, setStockMovements] = useState<StockMovement[]>(() =>
-    readStoredList<StockMovement>("pmoptimizer-stock-movements"));
+    readStoredList<StockMovement>(keys.stockMovements));
 
   const routeById = useMemo(
     () => new Map<string, RouteTemplate>(routes.map((route): [string, RouteTemplate] => [route.id, route])),
@@ -258,8 +260,15 @@ export default function SupplyPage() {
         return sum + Math.max(0, request.quantity - (order.receivedQuantity ?? 0));
       }, selectedStock.transitWithoutLinkedOrder));
     if (!selectedMaterial || quantity <= 0) return;
+    let requestId: string;
+    try {
+      requestId = nextDocNumber("21", (candidate) => purchaseRequests.some((item) => item.id === candidate));
+    } catch (numberError) {
+      setError(numberError instanceof Error ? numberError.message : "No se pudo numerar la solicitud.");
+      return;
+    }
     const request: PurchaseRequest = {
-      id: makeSupplyId("SC"),
+      id: requestId,
       materialCode: selectedMaterial.code,
       materialName: selectedMaterial.name,
       unit: selectedMaterial.unit,
@@ -349,8 +358,8 @@ export default function SupplyPage() {
     const newStockMovements = [...stockMovements, ...newMovements];
 
     try {
-      localStorage.setItem("pmoptimizer-warehouse-picking", JSON.stringify(newPickingSessions));
-      localStorage.setItem("pmoptimizer-stock-movements", JSON.stringify(newStockMovements));
+      localStorage.setItem(keys.warehousePicking, JSON.stringify(newPickingSessions));
+      localStorage.setItem(keys.stockMovements, JSON.stringify(newStockMovements));
       setPickingSessions(newPickingSessions);
       setStockMovements(newStockMovements);
       setOpenPickingDialog(false);

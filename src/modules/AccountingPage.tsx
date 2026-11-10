@@ -1,3 +1,4 @@
+import { keys } from "../data/keys";
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import {
@@ -92,8 +93,8 @@ const payableAccountCode = "210301";
 const personalExpenseAccountCode = "510301";
 const inputVatAccountCode = "110301";
 const outputVatAccountCode = "210201";
-const workOrdersStorageKey = "pmoptimizer-work-orders";
-const warehouseStorageKey = "pmoptimizer-warehouse-bins";
+const workOrdersStorageKey = keys.workOrders;
+const warehouseStorageKey = keys.warehouseBins;
 const vatRate = 0.19;
 const fallbackClients: ClientMaster[] = [
   { name: "Comercial Aconcagua" },
@@ -276,7 +277,7 @@ export default function AccountingPage({ role }: { role: string }) {
     observations: "",
   });
   const [payrollPaymentHistory, setPayrollPaymentHistory] = useState(() => 
-    readFinanceList<{ runId: string; period: string; date: string; amount: number; reference: string }>("pmoptimizer-payroll-payments", [])
+    readFinanceList<{ runId: string; period: string; date: string; amount: number; reference: string }>(keys.payrollPayments, [])
   );
   const canEdit = role === "Administrador" || role === "Contabilidad";
 
@@ -292,11 +293,11 @@ export default function AccountingPage({ role }: { role: string }) {
   const activeExpenseAccounts = finance.accounts.filter((account) => account.type === "Gasto");
   const activeRevenueAccounts = finance.accounts.filter((account) => account.type === "Ingreso");
   const purchaseOrders = readFinanceList<PurchaseOrder>(purchaseOrdersStorageKey);
-  const savedClients = readFinanceList<ClientMaster>("pmoptimizer-clients", fallbackClients);
+  const savedClients = readFinanceList<ClientMaster>(keys.clients, fallbackClients);
   const clients = savedClients.length ? savedClients : fallbackClients;
   const clientNames = [...new Set(clients.map((client) => client.name).filter(Boolean))];
   const savedSupplierNames = readFinanceList<SupplierMaster>(suppliersStorageKey).map((supplier) => supplier.name);
-  const quotedSupplierNames = readFinanceList<{ quotes?: { supplier: string }[] }>("pmoptimizer-purchase-requests")
+  const quotedSupplierNames = readFinanceList<{ quotes?: { supplier: string }[] }>(keys.purchaseRequests)
     .flatMap((request) => request.quotes?.map((quote) => quote.supplier) ?? []);
   const supplierNames = [...new Set([...savedSupplierNames, ...purchaseOrders.map((order) => order.supplier), ...quotedSupplierNames].filter(Boolean))];
   const contractOptions = [...new Map<string, ClientMaster>(clients
@@ -534,7 +535,7 @@ export default function AccountingPage({ role }: { role: string }) {
         }));
         const updatedHistory = [...paymentRecords, ...payrollPaymentHistory];
         setPayrollPaymentHistory(updatedHistory);
-        localStorage.setItem("pmoptimizer-payroll-payments", JSON.stringify(updatedHistory));
+        localStorage.setItem(keys.payrollPayments, JSON.stringify(updatedHistory));
 
         setPayrollPaymentDialog(false);
         setPayrollPaymentDraft({
