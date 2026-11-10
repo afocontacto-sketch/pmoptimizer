@@ -1,7 +1,7 @@
 import { keys } from "./keys";
 import { updateJson } from "./storage";
 
-export type AuditEntity = "material" | "order" | "payroll" | "budget" | "eac" | "transfer";
+export type AuditEntity = "material" | "order" | "payroll" | "budget" | "eac" | "transfer" | "employee";
 
 export type AuditRecord = {
   id: string;

@@ -13,7 +13,7 @@ export type Action =
   | "purchase.createRequest" | "purchase.quote" | "purchase.createPO" | "purchase.approve"
   | "budget.approve" | "eac.closeMonth"
   | "invoice.edit" | "accounting.edit"
-  | "payroll.edit" | "payroll.recalculate"
+  | "payroll.edit" | "payroll.recalculate" | "payroll.params" | "hr.edit"
   | "client.edit" | "backup.manage";
 
 const ING: Role = "Ingeniería e Industrial";
@@ -53,6 +53,8 @@ export const permissions: Record<Action, readonly Role[]> = {
   "accounting.edit": ["Contabilidad"],
   "payroll.edit": ["Contabilidad"],
   "payroll.recalculate": ["Contabilidad"],
+  "payroll.params": ["Contabilidad"],
+  "hr.edit": ["Contabilidad"],
   "client.edit": [],
   "backup.manage": [],
 };

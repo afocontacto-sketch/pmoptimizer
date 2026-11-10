@@ -29,6 +29,14 @@ import { printDocument } from "../components/print/printDocument";
 import { can } from "../app/permissions";
 import type { Role } from "../app/roles";
 import { recalculatePayrollRun } from "./payrollRecalc";
+import { computePayslip, getPayrollParams, migratePayrollFields, paramsTemplateFor, readPayrollParamsList, unpaidLeaveDays } from "../data/payroll";
+import type { Payslip, PayrollEmployeeFields } from "../data/payroll";
+import { createContractDraft } from "./hr/contractDocx";
+import { emptyContractData } from "./hr/contractTemplate";
+import type { ContractFormData } from "./hr/contractTemplate";
+import { readHrCompany } from "./hr/hrCompany";
+import { downloadDataUrl, EmployeeDocumentsPanel, EmployeeLegalFields, HrCompanyPanel, PayrollParamsPanel, PayslipDetail } from "./hr/HrPanels";
+import { blankDraft, draftToParts, employeeToDraft, legalDraftError } from "./hr/employeeDraft";
 
 export const hrEmployeesStorageKey = keys.hrEmployees;
 export const payrollRunsStorageKey = keys.payrollRuns;
@@ -39,7 +47,7 @@ export type Employee = {
   id: string;
   name: string;
   position: string;
-  contractType: "Indefinido" | "Plazo fijo" | "Honorarios";
+  contractType: "Indefinido" | "Plazo fijo" | "Obra o faena" | "Honorarios";
   contractStart?: string;
   contractEnd?: string;
   employmentContractNumber?: string;
@@ -47,14 +55,14 @@ export type Employee = {
   workplace?: string;
   monthlySalary: number;
   hoursPerMonth: number;
-  deductionPercent?: number;
   direct: boolean;
   contractCode: string;
   contractCodes?: string[];
   supervisorId?: string;
   supervisorLogin?: string;
   login?: string;
-};
+  contractData?: ContractFormData;
+} & PayrollEmployeeFields;
 export type ProjectContract = { code: string; client: string; active: boolean; };
 export type HrContract = {
   id: string;
@@ -74,6 +82,7 @@ export type PayrollLine = {
   deductions: number;
   net: number;
   allocations: { contract: string; amount: number }[];
+  payslip?: Payslip; // detalle legal; las liquidaciones antiguas (modelo plano) no lo tienen
 };
 export type PayrollRun = {
   id: string;
@@ -97,11 +106,14 @@ type EmployeeLeave = {
   createdAt: string;
 };
 
+const demoPayroll = (rut: string, afp: string, extra: Partial<PayrollEmployeeFields> = {}): PayrollEmployeeFields => ({
+  rut, afp, healthSystem: "FONASA", familyCharges: 0, gratificationMode: "Art50", weeklyHours: 42, fixedAllowances: [], recurringDeductions: [], ...extra,
+});
 const demoEmployees: Employee[] = [
-  { id: "EMP-001", name: "Camila Rojas", position: "Técnica mecánica", contractType: "Indefinido", monthlySalary: 1100000, hoursPerMonth: 180, deductionPercent: 20, direct: true, contractCode: "CT1234", contractCodes: ["CT1234"], supervisorId: "EMP-002", login: "tecnico" },
-  { id: "EMP-002", name: "Diego Muñoz", position: "Supervisor de mantenimiento", contractType: "Indefinido", monthlySalary: 1450000, hoursPerMonth: 180, deductionPercent: 20, direct: false, contractCode: "", contractCodes: ["CT1234"], supervisorLogin: "supervisor" },
-  { id: "EMP-004", name: "Tomás Vera", position: "Técnico eléctrico", contractType: "Indefinido", monthlySalary: 1050000, hoursPerMonth: 180, deductionPercent: 20, direct: true, contractCode: "CT1234", contractCodes: ["CT1234"], supervisorId: "EMP-002", login: "tecnico2" },
-  { id: "EMP-003", name: "Paula Soto", position: "Administración", contractType: "Indefinido", monthlySalary: 1250000, hoursPerMonth: 180, deductionPercent: 20, direct: false, contractCode: "", contractCodes: ["CT1234"] },
+  { id: "EMP-001", name: "Camila Rojas", position: "Técnica mecánica", contractType: "Indefinido", contractStart: "2022-03-01", ...demoPayroll("16.123.456-7", "Habitat", { fixedAllowances: [{ name: "Colación", amount: 60000, imponible: false }, { name: "Movilización", amount: 40000, imponible: false }] }), monthlySalary: 1100000, hoursPerMonth: 180, direct: true, contractCode: "CT1234", contractCodes: ["CT1234"], supervisorId: "EMP-002", login: "tecnico" },
+  { id: "EMP-002", name: "Diego Muñoz", position: "Supervisor de mantenimiento", contractType: "Indefinido", contractStart: "2021-06-01", ...demoPayroll("17.234.567-0", "Modelo", { healthSystem: "ISAPRE", isapreName: "Colmena", isaprePlanUF: 3.5, recurringDeductions: [{ name: "Cuota sindical", amount: 12000, type: "sindical" }] }), monthlySalary: 1450000, hoursPerMonth: 180, direct: false, contractCode: "", contractCodes: ["CT1234"], supervisorLogin: "supervisor" },
+  { id: "EMP-004", name: "Tomás Vera", position: "Técnico eléctrico", contractType: "Indefinido", contractStart: "2023-01-16", ...demoPayroll("14.456.789-7", "Capital"), monthlySalary: 1050000, hoursPerMonth: 180, direct: true, contractCode: "CT1234", contractCodes: ["CT1234"], supervisorId: "EMP-002", login: "tecnico2" },
+  { id: "EMP-003", name: "Paula Soto", position: "Administración", contractType: "Indefinido", contractStart: "2020-09-01", ...demoPayroll("15.345.678-K", "ProVida", { overtimeHours: 8 }), monthlySalary: 1250000, hoursPerMonth: 180, direct: false, contractCode: "", contractCodes: ["CT1234"] },
 ];
 const demoContracts: ProjectContract[] = [{ code: "CT1234", client: "Fiat Chile", active: true }];
 const demoHrContracts: HrContract[] = [
@@ -132,7 +144,7 @@ export function readHrContracts(): HrContract[] {
 
 export function readHrEmployees(): Employee[] {
   return readList<Employee>(hrEmployeesStorageKey, demoEmployees).map((employee) => ({
-    ...employee,
+    ...migratePayrollFields(employee),
     direct: employee.position.toLowerCase().includes("supervisor") ? false : employee.direct,
     contractCodes: employee.contractCodes?.length
       ? employee.contractCodes
@@ -191,10 +203,16 @@ function payrollEntry(run: PayrollRun, accounts: FinanceAccount[]): JournalEntry
   };
 }
 
-function buildPayrollLines(employees: Employee[], indirectContracts: ProjectContract[]): PayrollLine[] {
-  return employees.map((employee) => {
-    const gross = employee.monthlySalary;
-    const deductions = Math.round(gross * (employee.deductionPercent ?? 20) / 100);
+// Motor legal (data/payroll.ts): bloquea si faltan parámetros del período o datos previsionales de algún trabajador.
+function buildPayrollLines(employees: Employee[], indirectContracts: ProjectContract[], period: string, leaves: EmployeeLeave[]): { lines: PayrollLine[]; errors: string[] } {
+  const params = getPayrollParams(period);
+  if (!params) return { lines: [], errors: [`Faltan los parámetros del período ${period} (UF, UTM, IMM, tasas). Cárgalos en "Parámetros de remuneraciones" antes de calcular.`] };
+  const lines: PayrollLine[] = [];
+  const errors: string[] = [];
+  for (const employee of employees) {
+    const result = computePayslip(employee, params, { daysWorked: 30 - unpaidLeaveDays(leaves, employee.id, period) });
+    if (!result.ok) { errors.push(result.error); continue; }
+    const { gross, deductions, net } = result.value;
     const activeContracts = employee.direct
       ? allocationContracts(employee, indirectContracts).slice(0, 1)
       : allocationContracts(employee, indirectContracts);
@@ -209,8 +227,9 @@ function buildPayrollLines(employees: Employee[], indirectContracts: ProjectCont
           return { contract: contract.code, amount };
         })
         : [{ contract: "GASTO-EMPRESA", amount: gross }];
-    return { employeeId: employee.id, employee: employee.name, gross, deductions, net: gross - deductions, allocations };
-});
+    lines.push({ employeeId: employee.id, employee: employee.name, gross, deductions, net, allocations, payslip: result.value });
+  }
+  return { lines, errors };
 }
 
 export default function HumanResourcesPage({ user = "", role = "Administrador" }: { user?: string; role?: Role }) {
@@ -220,7 +239,7 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
   const [runs, setRuns] = useState(() => readList<PayrollRun>(payrollRunsStorageKey, []));
   const [leaves, setLeaves] = useState(() => readList<EmployeeLeave>(hrLeavesStorageKey, []));
   const [editingEmployeeId, setEditingEmployeeId] = useState("");
-  const [draft, setDraft] = useState({ name: "", position: "", contractType: "Indefinido" as Employee["contractType"], contractStart: new Date().toISOString().slice(0, 10), contractEnd: "", employmentContractNumber: "", workSchedule: "", workplace: "", monthlySalary: "", hoursPerMonth: "180", deductionPercent: "20", direct: true, contractCodes: contracts[0]?.code ? [contracts[0].code] : [], supervisorId: "", supervisorLogin: "", login: "" });
+  const [draft, setDraft] = useState(() => blankDraft(contracts[0]?.code));
   const [leaveDraft, setLeaveDraft] = useState({ employeeId: "", type: "Vacaciones" as LeaveType, startDate: new Date().toISOString().slice(0, 10), endDate: new Date().toISOString().slice(0, 10), details: "" });
   const [editingContractId, setEditingContractId] = useState("");
   const [contractDraft, setContractDraft] = useState({ code: "", client: "", type: "mixto" as HrContract["type"], costPerHour: "", startDate: new Date().toISOString().slice(0, 10), endDate: "", description: "" });
@@ -230,6 +249,7 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const indirectContracts = useMemo(() => contracts.filter((item) => item.active), [contracts]);
+  const afpOptions = useMemo(() => [...new Set(readPayrollParamsList().flatMap((item) => Object.keys(item.rates.afpCommission)))], []);
 
   const saveHrContract = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -298,13 +318,13 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
     event.preventDefault();
     const salary = Number(draft.monthlySalary);
     const hours = Number(draft.hoursPerMonth);
-    const deductionPercent = Number(draft.deductionPercent);
+    const legalError = legalDraftError(draft);
     const isSupervisor = draft.position.toLowerCase().includes("supervisor");
     const direct = isSupervisor ? false : draft.direct;
     const selectedContracts = contracts.filter((item) => item.active && draft.contractCodes.includes(item.code));
     if (!draft.name.trim() || !draft.position.trim() || !Number.isFinite(salary) || salary <= 0 ||
       !Number.isFinite(hours) || hours <= 0 ||
-      !Number.isFinite(deductionPercent) || deductionPercent < 0 || deductionPercent > 100 ||
+      legalError ||
       (draft.contractEnd && draft.contractEnd < draft.contractStart) ||
       (direct && selectedContracts.length !== 1) || (!direct && selectedContracts.length === 0) ||
       (isSupervisor && (!draft.supervisorLogin || employees.some((item) => item.supervisorLogin === draft.supervisorLogin && item.id !== editingEmployeeId))) ||
@@ -312,19 +332,31 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
       setError("Completa los datos del colaborador y selecciona un contrato para imputación (uno para personal directo o uno o más para personal indirecto).");
       return;
     }
+    const afpKnown = readPayrollParamsList().some((item) => draft.afp in item.rates.afpCommission);
+    if (!afpKnown && draft.contractType !== "Honorarios") {
+      setError(`La AFP "${draft.afp}" no tiene comisión cargada en los parámetros de remuneraciones.`);
+      return;
+    }
     if (draft.login && employees.some((item) => item.login === draft.login && item.id !== editingEmployeeId)) {
       setError("Ese usuario del sistema ya está vinculado a otro colaborador.");
       return;
     }
     const contractCodes = selectedContracts.map((contract) => contract.code);
+    const parts = draftToParts(draft);
     const employee: Employee = {
-      ...draft,
+      contractType: draft.contractType,
+      contractStart: draft.contractStart,
+      contractEnd: draft.contractEnd,
+      employmentContractNumber: draft.employmentContractNumber,
+      workSchedule: draft.workSchedule,
+      workplace: draft.workplace,
+      ...parts.fields,
+      contractData: parts.contractData,
       id: editingEmployeeId || makeFinanceId("EMP"),
       name: draft.name.trim(),
       position: draft.position.trim(),
       monthlySalary: salary,
       hoursPerMonth: hours,
-      deductionPercent,
       direct,
       contractCodes,
       contractCode: direct ? contractCodes[0] : "",
@@ -339,35 +371,38 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
       localStorage.setItem(hrEmployeesStorageKey, JSON.stringify(next));
       setEmployees(next);
       setEditingEmployeeId("");
-      setDraft({ name: "", position: "", contractType: "Indefinido", contractStart: new Date().toISOString().slice(0, 10), contractEnd: "", employmentContractNumber: "", workSchedule: "", workplace: "", monthlySalary: "", hoursPerMonth: "180", deductionPercent: "20", direct: true, contractCodes: contracts[0]?.code ? [contracts[0].code] : [], supervisorId: "", supervisorLogin: "", login: "" });
+      setDraft(blankDraft(contracts[0]?.code));
       setError("");
       setMessage(editingEmployeeId ? "Antecedentes del colaborador actualizados." : "Colaborador creado.");
+      if (!editingEmployeeId) void draftContract(employee, true);
     } catch (cause) {
       console.error("No se pudo guardar el colaborador.", cause);
       setError("No se pudo guardar el colaborador en este navegador.");
     }
   };
 
+  // Propuesta de contrato .docx: se descarga y queda en la carpeta del trabajador como "Contrato (borrador)".
+  const draftContract = async (employee: Employee, created = false) => {
+    const today = new Date().toISOString().slice(0, 10);
+    const startMonth = (employee.contractStart || today).slice(0, 7);
+    const result = await createContractDraft({
+      employee, data: employee.contractData ?? emptyContractData, company: readHrCompany(),
+      params: getPayrollParams(startMonth) ?? paramsTemplateFor(startMonth), today,
+    }, { user, role });
+    const prefix = created ? "Colaborador creado. " : "";
+    if (!result.ok) {
+      setMessage(created ? "Colaborador creado." : "");
+      setError(`${result.error}`);
+      return;
+    }
+    downloadDataUrl(result.value.document.dataUrl, result.value.document.fileName);
+    setError("");
+    setMessage(`${prefix}Borrador de contrato generado, descargado y guardado en su carpeta.${result.value.warnings.length ? ` Advertencias: ${result.value.warnings.join(" ")}` : ""}`);
+  };
+
   const editEmployee = (employee: Employee) => {
     setEditingEmployeeId(employee.id);
-    setDraft({
-      name: employee.name,
-      position: employee.position,
-      contractType: employee.contractType,
-      contractStart: employee.contractStart ?? "",
-      contractEnd: employee.contractEnd ?? "",
-      employmentContractNumber: employee.employmentContractNumber ?? "",
-      workSchedule: employee.workSchedule ?? "",
-      workplace: employee.workplace ?? "",
-      monthlySalary: String(employee.monthlySalary),
-      hoursPerMonth: String(employee.hoursPerMonth),
-      deductionPercent: String(employee.deductionPercent ?? 20),
-      direct: employee.direct,
-      contractCodes: employee.contractCodes?.length ? employee.contractCodes : employee.contractCode ? [employee.contractCode] : [],
-      supervisorId: employee.supervisorId ?? "",
-      supervisorLogin: employee.supervisorLogin ?? "",
-      login: employee.login ?? "",
-    });
+    setDraft(employeeToDraft(employee));
     setError("");
     setMessage("");
   };
@@ -415,7 +450,12 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
       setError("Agrega colaboradores antes de generar la nómina.");
       return;
     }
-    const lines = buildPayrollLines(employees, indirectContracts);
+    const built = buildPayrollLines(employees, indirectContracts, period, leaves);
+    if (built.errors.length) {
+      setError(built.errors.join(" "));
+      return;
+    }
+    const lines = built.lines;
     const run: PayrollRun = {
       id: makeFinanceId("NOM"),
       period,
@@ -448,7 +488,7 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
       console.error("No se pudo generar la nómina.", cause);
       setError("No se pudo guardar la nómina.");
     }
-  }, [employees, indirectContracts, period, runs]);
+  }, [employees, indirectContracts, leaves, period, runs]);
 
   useEffect(() => {
     const now = new Date();
@@ -496,7 +536,12 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
   };
 
   const recalculateRun = (run: PayrollRun) => {
-    const result = recalculatePayrollRun(run.id, buildPayrollLines(readHrEmployees(), indirectContracts), { user, role }, payrollEntry);
+    const built = buildPayrollLines(readHrEmployees(), indirectContracts, run.period, leaves);
+    if (built.errors.length) {
+      setError(built.errors.join(" "));
+      return;
+    }
+    const result = recalculatePayrollRun(run.id, built.lines, { user, role }, payrollEntry);
     if (!result.ok) {
       setError(result.error);
       return;
@@ -509,7 +554,8 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
   const printPayslip = () => {
     if (!activeSlipRun || !selectedSlipLine) return;
     printDocument(payslipDoc({
-      period: activeSlipRun.period, status: activeSlipRun.status, employer: "PMOptimizer · Empresa demo",
+      period: activeSlipRun.period, status: activeSlipRun.status, employer: company.razonSocial, employerRut: company.rut, employerAddress: company.domicilio,
+      workerRut: selectedSlipEmployee?.rut, payslip: selectedSlipLine.payslip,
       employeeName: selectedSlipLine.employee, employeeId: selectedSlipLine.employeeId,
       position: selectedSlipEmployee?.position, contractNumber: selectedSlipEmployee?.employmentContractNumber,
       contractType: selectedSlipEmployee?.contractType,
@@ -524,6 +570,7 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
   const activeSlipRun = runs.find((run) => run.period === selectedSlipPeriod);
   const selectedSlipLine = activeSlipRun?.lines.find((line) => line.employeeId === selectedSlipEmployeeId);
   const selectedSlipEmployee = employees.find((employee) => employee.id === selectedSlipEmployeeId);
+  const company = readHrCompany();
 
   return (
     <Stack spacing={3}>
@@ -531,7 +578,7 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
         <Typography variant="h4">Recursos humanos y nómina</Typography>
         <Typography color="text.secondary">Gestión de contratos, empleados con asignación directa/indirecta, y cálculo automático de nóminas con prorrateo.</Typography>
       </div>
-      <Alert severity="warning">Prototipo local: al último día del mes calcula la nómina si la aplicación está abierta; si no, usa el cálculo manual al ingresar. Las tasas de descuento son configurables y demostrativas, no cálculo legal chileno. AFP, salud, AFC, impuesto, Previred, liquidaciones y finiquitos requieren reglas vigentes y validación con contador/especialista laboral.</Alert>
+      <Alert severity="warning">Prototipo local: al último día del mes calcula la nómina si la aplicación está abierta; si no, usa el cálculo manual al ingresar. La liquidación aplica la normativa chilena con parámetros mensuales editables (UF, UTM, IMM, topes, tasas e impuesto); los valores iniciales son los de la especificación del 10-11-2026. Valídalos con Previred/SII y con un contador o abogado laboral antes de usar en producción.</Alert>
       {error && <Alert severity="error">{error}</Alert>}
       {message && <Alert severity="success">{message}</Alert>}
       
@@ -567,7 +614,7 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
             const position = event.target.value;
             return { ...current, position, direct: position.toLowerCase().includes("supervisor") ? false : current.direct };
           })} required fullWidth /></Grid>
-          <Grid size={{ xs: 12, md: 2 }}><TextField select label="Tipo de contrato" value={draft.contractType} onChange={(event) => setDraft((current) => ({ ...current, contractType: event.target.value as Employee["contractType"] }))} fullWidth><MenuItem value="Indefinido">Indefinido</MenuItem><MenuItem value="Plazo fijo">Plazo fijo</MenuItem><MenuItem value="Honorarios">Honorarios</MenuItem></TextField></Grid>
+          <Grid size={{ xs: 12, md: 2 }}><TextField select label="Tipo de contrato" value={draft.contractType} onChange={(event) => setDraft((current) => ({ ...current, contractType: event.target.value as Employee["contractType"] }))} fullWidth><MenuItem value="Indefinido">Indefinido</MenuItem><MenuItem value="Plazo fijo">Plazo fijo</MenuItem><MenuItem value="Obra o faena">Obra o faena</MenuItem><MenuItem value="Honorarios">Honorarios</MenuItem></TextField></Grid>
           <Grid size={{ xs: 12, md: 2 }}><TextField label="N.º contrato laboral" value={draft.employmentContractNumber} onChange={(event) => setDraft((current) => ({ ...current, employmentContractNumber: event.target.value }))} fullWidth /></Grid>
           <Grid size={{ xs: 12, md: 2 }}><TextField label="Inicio contrato" type="date" value={draft.contractStart} onChange={(event) => setDraft((current) => ({ ...current, contractStart: event.target.value }))} slotProps={{ inputLabel: { shrink: true } }} required fullWidth /></Grid>
           <Grid size={{ xs: 12, md: 2 }}><TextField label="Término (si aplica)" type="date" value={draft.contractEnd} onChange={(event) => setDraft((current) => ({ ...current, contractEnd: event.target.value }))} slotProps={{ inputLabel: { shrink: true } }} fullWidth /></Grid>
@@ -575,7 +622,6 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
           <Grid size={{ xs: 12, md: 3 }}><TextField label="Lugar de trabajo" value={draft.workplace} onChange={(event) => setDraft((current) => ({ ...current, workplace: event.target.value }))} fullWidth /></Grid>
           <Grid size={{ xs: 12, md: 2 }}><TextField label="Sueldo mensual CLP" type="number" value={draft.monthlySalary} onChange={(event) => setDraft((current) => ({ ...current, monthlySalary: event.target.value }))} required fullWidth /></Grid>
           <Grid size={{ xs: 12, md: 2 }}><TextField label="Horas/mes" type="number" value={draft.hoursPerMonth} onChange={(event) => setDraft((current) => ({ ...current, hoursPerMonth: event.target.value }))} required fullWidth /></Grid>
-          <Grid size={{ xs: 12, md: 2 }}><TextField label="Descuentos demo %" type="number" value={draft.deductionPercent} onChange={(event) => setDraft((current) => ({ ...current, deductionPercent: event.target.value }))} slotProps={{ htmlInput: { min: 0, max: 100, step: 0.01 } }} helperText="Configurable por colaborador" required fullWidth /></Grid>
           <Grid size={{ xs: 12, md: 3 }}><TextField select label="Asignación" value={draft.direct ? "directo" : "indirecto"} disabled={draft.position.toLowerCase().includes("supervisor")} helperText={draft.position.toLowerCase().includes("supervisor") ? "El costo de supervisión siempre es indirecto." : undefined} onChange={(event) => setDraft((current) => ({ ...current, direct: event.target.value === "directo", contractCodes: event.target.value === "directo" ? current.contractCodes.slice(0, 1) : current.contractCodes }))} fullWidth><MenuItem value="directo">Personal directo</MenuItem><MenuItem value="indirecto">Indirecto / prorrateable</MenuItem></TextField></Grid>
           <Grid size={{ xs: 12, md: 3 }}>
             <TextField
@@ -622,7 +668,8 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
               })}
             </TextField>
           </Grid>}
-          <Grid size={{ xs: 12, md: 3 }}><Stack direction="row" spacing={1}><Button type="submit" variant="contained">{editingEmployeeId ? "Guardar cambios" : "Guardar colaborador"}</Button>{editingEmployeeId && <Button onClick={() => { setEditingEmployeeId(""); setDraft({ name: "", position: "", contractType: "Indefinido", contractStart: new Date().toISOString().slice(0, 10), contractEnd: "", employmentContractNumber: "", workSchedule: "", workplace: "", monthlySalary: "", hoursPerMonth: "180", deductionPercent: "20", direct: true, contractCodes: contracts[0]?.code ? [contracts[0].code] : [], supervisorId: "", supervisorLogin: "", login: "" }); }}>Cancelar</Button>}</Stack></Grid>
+          <EmployeeLegalFields draft={draft} setDraft={setDraft} afpOptions={afpOptions} />
+          <Grid size={{ xs: 12, md: 3 }}><Stack direction="row" spacing={1}><Button type="submit" variant="contained">{editingEmployeeId ? "Guardar cambios" : "Guardar colaborador"}</Button>{editingEmployeeId && <Button onClick={() => { setEditingEmployeeId(""); setDraft(blankDraft(contracts[0]?.code)); }}>Cancelar</Button>}</Stack></Grid>
         </Grid>
       </Paper>
       <Paper sx={{ p: 3 }}>
@@ -698,8 +745,8 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
               <Grid size={{ xs: 12, sm: 6 }}>
                 <Paper variant="outlined" sx={{ p: 2, height: "100%" }}>
                   <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>EMPLEADOR</Typography>
-                  <Typography>PMOptimizer · Empresa demo</Typography>
-                  <Typography variant="body2" color="text.secondary">RUT y domicilio: no configurados</Typography>
+                  <Typography>{company.razonSocial}</Typography>
+                  <Typography variant="body2" color="text.secondary">RUT: {company.rut || "no configurado"} · Domicilio: {company.domicilio || "no configurado"}</Typography>
                 </Paper>
               </Grid>
               <Grid size={{ xs: 12, sm: 6 }}>
@@ -708,6 +755,7 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
                   <Typography>{selectedSlipLine.employee}</Typography>
                   <Typography variant="body2">Cargo: {selectedSlipEmployee?.position ?? "—"}</Typography>
                   <Typography variant="body2">Identificador interno: {selectedSlipLine.employeeId}</Typography>
+                  {selectedSlipLine.payslip && <Typography variant="body2">RUT: {selectedSlipEmployee?.rut || "no registrado"} · AFP: {selectedSlipLine.payslip.worker.afp} · Salud: {selectedSlipLine.payslip.worker.health} · Días trabajados: {selectedSlipLine.payslip.daysWorked}</Typography>}
                 </Paper>
               </Grid>
               <Grid size={{ xs: 12 }}>
@@ -724,6 +772,7 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
               </Grid>
             </Grid>
             <Grid container spacing={2}>
+              {selectedSlipLine.payslip ? <Grid size={{ xs: 12 }}><PayslipDetail slip={selectedSlipLine.payslip} /></Grid> : (<>
               <Grid size={{ xs: 12, md: 6 }}>
                 <Paper variant="outlined" sx={{ height: "100%" }}>
                   <Box sx={{ px: 2, py: 1, bgcolor: "#f1f5f9" }}><Typography variant="subtitle2" sx={{ fontWeight: 700 }}>HABERES</Typography></Box>
@@ -742,6 +791,7 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
                   </TableBody></Table>
                 </Paper>
               </Grid>
+              </>)}
               <Grid size={{ xs: 12 }}>
                 <Paper sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", p: 2, bgcolor: "#f0fdf4", border: "1px solid #86efac" }}>
                   <Typography variant="h6" sx={{ fontWeight: 800 }}>LÍQUIDO A PAGO</Typography>
@@ -758,6 +808,9 @@ export default function HumanResourcesPage({ user = "", role = "Administrador" }
           </Paper>
         )}
       </Paper>
+      <PayrollParamsPanel user={user} role={role} />
+      <HrCompanyPanel user={user} role={role} />
+      <EmployeeDocumentsPanel employees={employees} user={user} role={role} onGenerateDraft={(id) => { const target = employees.find((item) => item.id === id); if (target) void draftContract(target); }} />
     </Stack>
   );
 }

@@ -16,6 +16,7 @@
     "@mui/icons-material": "^9.5.0",
     "@mui/material": "^9.5.0",
     "@mui/x-charts": "^9.17.0",
+    "docx": "^9.15.3",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-router-dom": "^7.18.5"
