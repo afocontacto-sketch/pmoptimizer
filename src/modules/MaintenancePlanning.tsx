@@ -1,5 +1,8 @@
 import { keys } from "../data/keys";
-import { useEffect, useMemo, useState } from "react";
+import { readContracts } from "../data/contracts";
+import { readJson, updateJson } from "../data/storage";
+import { useStoredValue } from "../hooks/useStore";
+import { useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import {
   Alert,
@@ -53,16 +56,6 @@ type ClientContract = { name: string; contractCode: string; wbs: string[] };
 
 const customFieldStorageKey = keys.maintenancePlanFields;
 
-function readStored<T>(key: string, fallback: T): T {
-  const raw = localStorage.getItem(key);
-  if (!raw) return fallback;
-  try {
-    return JSON.parse(raw) as T;
-  } catch (error) {
-    console.warn(`No se pudo leer la configuración guardada (${key}).`, error);
-    return fallback;
-  }
-}
 
 function makeId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -124,8 +117,8 @@ const routeHeaders = [
 ];
 
 export default function MaintenancePlanning({ role = "Administrador" }: { role?: Role }) {
-  const [routes, setRoutes] = useState<RouteTemplate[]>(() => readStored(routeStorageKey, sampleRoutes));
-  const [plans, setPlans] = useState<MaintenancePlan[]>(() => readStored(planStorageKey, samplePlans));
+  const routes = useStoredValue(routeStorageKey, () => readJson<RouteTemplate[]>(routeStorageKey, sampleRoutes));
+  const plans = useStoredValue(planStorageKey, () => readJson<MaintenancePlan[]>(planStorageKey, samplePlans));
   const equipmentOptions = useMemo(() => {
     const master = readEquipmentMaster();
     const byCode = new Map(master.map((equipment): [string, { code: string; name: string }] => [equipment.code, equipment]));
@@ -136,11 +129,9 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
     }
     return [...byCode.values()];
   }, [plans]);
-  const [clientContracts] = useState(() => readStored<ClientContract[]>(keys.clients, []));
-  const [workOrders] = useState(() => readStored<{ plannedCallId?: string; status: string }[]>(keys.workOrders, []));
-  const [customFieldDefinitions, setCustomFieldDefinitions] = useState<CustomFieldDefinition[]>(
-    () => readStored(customFieldStorageKey, []),
-  );
+  const [clientContracts] = useState(() => readContracts().map((contract): ClientContract => ({ name: contract.customer, contractCode: contract.code, wbs: contract.wbs.map((element) => element.code) })));
+  const [workOrders] = useState(() => readJson<{ plannedCallId?: string; status: string }[]>(keys.workOrders, []));
+  const customFieldDefinitions = useStoredValue(customFieldStorageKey, () => readJson<CustomFieldDefinition[]>(customFieldStorageKey, []));
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({});
   const [customFieldName, setCustomFieldName] = useState("");
   const [importMessage, setImportMessage] = useState("");
@@ -271,22 +262,20 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
     return [...totals.values()];
   }, [pmGanttTotals]);
 
-  useEffect(() => {
-    localStorage.setItem(routeStorageKey, JSON.stringify(routes));
-  }, [routes]);
-
-  useEffect(() => {
-    localStorage.setItem(planStorageKey, JSON.stringify(plans));
-  }, [plans]);
-
+  // Escrituras con permiso validado en la lógica (no solo en la UI); false si se deniega o falla.
   const savePlans = (next: MaintenancePlan[]) => {
-    setPlans(next);
-    localStorage.setItem(planStorageKey, JSON.stringify(next));
+    if (!can(role, "plan.edit")) { setImportError("Tu rol no puede editar planes de mantenimiento."); return false; }
+    return updateJson<MaintenancePlan[]>(planStorageKey, samplePlans, () => next) !== null;
   };
 
   const saveRoutes = (next: RouteTemplate[]) => {
-    setRoutes(next);
-    localStorage.setItem(routeStorageKey, JSON.stringify(next));
+    if (!can(role, "route.edit")) { setImportError("Tu rol no puede editar hojas de ruta."); return false; }
+    return updateJson<RouteTemplate[]>(routeStorageKey, sampleRoutes, () => next) !== null;
+  };
+
+  const saveCustomFields = (next: CustomFieldDefinition[]) => {
+    if (!can(role, "plan.edit")) { setImportError("Tu rol no puede editar planes de mantenimiento."); return false; }
+    return updateJson<CustomFieldDefinition[]>(customFieldStorageKey, [], () => next) !== null;
   };
 
   const handleCreatePlan = (event: FormEvent<HTMLFormElement>) => {
@@ -330,7 +319,7 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
       horizonMonths,
       customFields: { ...customFieldValues },
     };
-    savePlans([...plans, plan]);
+    if (!savePlans([...plans, plan])) return;
     setNewPlan((current) => ({ ...current, name: "", equipmentId: "", contract: "", wbs: "" }));
     setCustomFieldValues({});
     setImportError("");
@@ -405,7 +394,7 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
         });
       }
       if (!imported.length) throw new Error("No se encontraron planes válidos.");
-      savePlans([...plans, ...imported]);
+      if (!savePlans([...plans, ...imported])) return;
       setImportError("");
       setImportMessage(`Importación correcta: ${imported.length} plan(es).`);
     } catch (error) {
@@ -476,13 +465,13 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
         }
       }
       if (!groups.size) throw new Error("No se encontraron hojas de ruta válidas.");
-      saveRoutes([
+      if (!saveRoutes([
         ...routes.filter((route) => !groups.has(route.id)),
         ...[...groups.values()].map((route) => ({
           ...route,
           operations: route.operations.sort((a, b) => a.order - b.order),
         })),
-      ]);
+      ])) return;
       setImportError("");
       setImportMessage(`Importación correcta: ${groups.size} hoja(s) de ruta. Los planes se actualizaron automáticamente.`);
     } catch (error) {
@@ -505,8 +494,7 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
     }
     const definition = { key: `${keyBase}_${Date.now().toString(36)}`, label };
     const next = [...customFieldDefinitions, definition];
-    setCustomFieldDefinitions(next);
-    localStorage.setItem(customFieldStorageKey, JSON.stringify(next));
+    if (!saveCustomFields(next)) return;
     setCustomFieldName("");
     setImportError("");
     setImportMessage("Campo personalizable agregado.");
@@ -514,8 +502,7 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
 
   const removeCustomField = (key: string) => {
     const next = customFieldDefinitions.filter((field) => field.key !== key);
-    setCustomFieldDefinitions(next);
-    localStorage.setItem(customFieldStorageKey, JSON.stringify(next));
+    if (!saveCustomFields(next)) return;
     setCustomFieldValues((current) => {
       const { [key]: removed, ...remaining } = current;
       void removed;

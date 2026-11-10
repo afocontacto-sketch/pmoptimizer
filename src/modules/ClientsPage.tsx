@@ -1,8 +1,8 @@
-import { keys } from "../data/keys";
 import { can } from "../app/permissions";
 import type { Role } from "../app/roles";
-import { validateContractDates, wbsSuffixes } from "../data/contracts";
-import { useEffect, useState } from "react";
+import { readClients, readContractFiles, saveContractFile, updateClients, validateContractDates, wbsSuffixes } from "../data/contracts";
+import type { ClientContract as Contract, ClientRecord as Client, ContractFile } from "../data/contracts";
+import { useState } from "react";
 import type { ChangeEvent } from "react";
 import {
   Alert,
@@ -33,55 +33,6 @@ import {
   Upload as UploadIcon,
 } from "@mui/icons-material";
 
-export const clientsStorageKey = keys.clientsV2;
-export const contractFilesStorageKey = keys.contractFiles;
-
-export type WbsElement = {
-  id: string;
-  code: string;
-  type: "PRE" | "OVH" | "COR" | "GAR" | "REP" | "IND" | "ESPERA";
-  description: string;
-};
-
-export type Contract = {
-  id: string;
-  code: string;
-  name: string;
-  clientId: string;
-  startDate: string;
-  endDate: string;
-  budget: number;
-  wbs: WbsElement[];
-  createdAt: string;
-};
-
-export type Client = {
-  id: string;
-  code: string;
-  name: string;
-  sector: string;
-  status: "Activo" | "Inactivo";
-  rut?: string;
-  contact?: {
-    name: string;
-    phone: string;
-    email: string;
-  };
-  contracts: Contract[];
-  contractFileId?: string;
-  contractFileName?: string;
-  contractFileDate?: string;
-  createdAt: string;
-};
-
-type ContractFile = {
-  id: string;
-  clientId: string;
-  fileName: string;
-  fileData: string;
-  uploadDate: string;
-};
-
 const sectors = ["Retail", "Minería", "Manufactura", "Servicios", "Transporte", "Construcción", "Tecnología"];
 const wbsTypes: readonly string[] = wbsSuffixes;
 
@@ -89,41 +40,13 @@ function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
-function readClients(): Client[] {
-  try {
-    const raw = localStorage.getItem(clientsStorageKey);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveClients(clients: Client[]): void {
-  localStorage.setItem(clientsStorageKey, JSON.stringify(clients));
-}
-
-function readContractFiles(): Map<string, ContractFile> {
-  try {
-    const raw = localStorage.getItem(contractFilesStorageKey);
-    const files = raw ? JSON.parse(raw) : [];
-    return new Map(files.map((f: ContractFile) => [f.id, f]));
-  } catch {
-    return new Map();
-  }
-}
-
-function saveContractFiles(files: Map<string, ContractFile>): void {
-  localStorage.setItem(contractFilesStorageKey, JSON.stringify(Array.from(files.values())));
-}
-
 export default function ClientsPage({ role }: { role: Role }) {
   const canEdit = can(role, "client.edit");
   const [contractError, setContractError] = useState("");
-  const [clients, setClients] = useState<Client[]>([]);
+  const [clients, setClients] = useState<Client[]>(readClients);
   const [openDialog, setOpenDialog] = useState(false);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [formData, setFormData] = useState<Partial<Client>>({});
-  const [contractFiles] = useState(readContractFiles());
   const [selectedClientForContract, setSelectedClientForContract] = useState<string>("");
   const [openContractDialog, setOpenContractDialog] = useState(false);
   const [newContract, setNewContract] = useState<Partial<Contract>>({
@@ -133,9 +56,6 @@ export default function ClientsPage({ role }: { role: Role }) {
     ],
   });
 
-  useEffect(() => {
-    setClients(readClients());
-  }, []);
 
   const handleNewClient = () => {
     setEditingClient(null);
@@ -153,6 +73,7 @@ export default function ClientsPage({ role }: { role: Role }) {
   };
 
   const handleSaveClient = () => {
+    if (!canEdit) return;
     if (!formData.name || !formData.sector) {
       alert("Por favor completa nombre y sector");
       return;
@@ -185,15 +106,16 @@ export default function ClientsPage({ role }: { role: Role }) {
     }
 
     setClients(updated);
-    saveClients(updated);
+    updateClients(() => updated);
     setOpenDialog(false);
   };
 
   const handleDeleteClient = (clientId: string) => {
+    if (!canEdit) return;
     if (confirm("¿Eliminar cliente? (solo si no tiene órdenes activas)")) {
       const updated = clients.filter((c) => c.id !== clientId);
       setClients(updated);
-      saveClients(updated);
+      updateClients(() => updated);
     }
   };
 
@@ -244,11 +166,12 @@ export default function ClientsPage({ role }: { role: Role }) {
     );
 
     setClients(updated);
-    saveClients(updated);
+    updateClients(() => updated);
     setOpenContractDialog(false);
   };
 
   const handleFileUpload = (clientId: string, event: ChangeEvent<HTMLInputElement>) => {
+    if (!canEdit) return;
     const file = event.target.files?.[0];
     if (!file) return;
 
@@ -275,18 +198,16 @@ export default function ClientsPage({ role }: { role: Role }) {
       );
 
       setClients(updated);
-      saveClients(updated);
+      updateClients(() => updated);
 
-      const files = readContractFiles();
-      files.set(contractFile.id, contractFile);
-      saveContractFiles(files);
+      saveContractFile(contractFile);
     };
     reader.readAsDataURL(file);
   };
 
   const handleDownloadFile = (fileId: string | undefined) => {
     if (!fileId) return;
-    const file = contractFiles.get(fileId);
+    const file = readContractFiles().get(fileId);
     if (!file) return;
 
     const link = document.createElement("a");

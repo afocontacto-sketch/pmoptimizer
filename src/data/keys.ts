@@ -36,7 +36,6 @@ export const keys = {
   // Temporales: se eliminan en E0.2/E7.1 (flujos de Supply y llamadas persistidas).
   maintenanceCalls: k("maintenance-calls"),
   // Módulos de Copilot sin commit (QualityPage, ClientsPage, ProductionPage); a consolidar luego.
-  clientsV2: k("clients-v2"),
   contractFiles: k("contracts-files"),
   qualityChecklists: k("quality-checklists"),
   qualityMaterials: k("quality-materials"),

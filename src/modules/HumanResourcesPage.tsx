@@ -1,4 +1,5 @@
 import { keys } from "../data/keys";
+import { readContracts } from "../data/contracts";
 import { demoAccounts } from "../app/roles";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
@@ -149,10 +150,7 @@ export function readHrEmployees(): Employee[] {
 }
 
 export function readProjectContracts(): ProjectContract[] {
-  const clientContracts = readFinanceList<{ name: string; contractCode?: string }>(keys.clients)
-    .flatMap((client) => client.contractCode
-      ? [{ code: client.contractCode, client: client.name, active: true }]
-      : []);
+  const clientContracts = readContracts().map((contract) => ({ code: contract.code, client: contract.customer, active: true }));
   const merged = [...demoContracts, ...clientContracts];
   return [...new Map<string, ProjectContract>(
     merged.map((contract): [string, ProjectContract] => [contract.code, contract]),

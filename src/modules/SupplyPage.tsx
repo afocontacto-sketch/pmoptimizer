@@ -7,6 +7,9 @@ import FutureCallsTab from "./supply/FutureCallsTab";
 import MaterialForecastTab from "./supply/MaterialForecastTab";
 import SupplyDashboard from "./supply/SupplyDashboard";
 import { nextDocNumber } from "../data/docNumbering";
+import { updateJson } from "../data/storage";
+import { printDocument } from "../components/print/printDocument";
+import { materialDemandDoc } from "../components/print/templates/materialDemandDoc";
 import { useMemo, useState } from "react";
 import {
   Alert,
@@ -37,6 +40,7 @@ import {
   purchaseOrdersStorageKey,
   purchaseRequestsStorageKey,
   readStoredList,
+  requestCostAssignment,
 } from "./supplyData";
 import type { PurchaseOrder, PurchaseRequest } from "./supplyData";
 
@@ -214,6 +218,10 @@ export default function SupplyPage({ user, role }: { user: string; role: Role })
     }, selectedStock.transitWithoutLinkedOrder);
 
   const createRequest = (row: DemandRow) => {
+    if (!can(role, "purchase.createRequest")) {
+      setError("Tu rol no puede crear solicitudes de pedido.");
+      return;
+    }
     const quantity = Math.max(0, row.shortage - purchaseRequests
       .filter((request) => request.materialCode === selectedMaterial?.code &&
         request.needDate <= row.date.slice(0, 10) &&
@@ -231,6 +239,7 @@ export default function SupplyPage({ user, role }: { user: string; role: Role })
       setError(numberError instanceof Error ? numberError.message : "No se pudo numerar la solicitud.");
       return;
     }
+    const costAssignment = requestCostAssignment({ callIds: row.callIds }, calls);
     const request: PurchaseRequest = {
       id: requestId,
       materialCode: selectedMaterial.code,
@@ -240,19 +249,14 @@ export default function SupplyPage({ user, role }: { user: string; role: Role })
       needDate: row.date.slice(0, 10),
       callIds: row.callIds,
       status: "Pendiente cotización",
+      createdBy: user,
+      ...(costAssignment ? { contract: costAssignment.contract, wbs: costAssignment.wbs } : {}),
     };
-    const next = [...purchaseRequests, request];
-    try {
-      localStorage.setItem(purchaseRequestsStorageKey, JSON.stringify(next));
-      setPurchaseRequests(next);
-      setError("");
-    } catch (writeError) {
-      console.error("No se pudo guardar la solicitud de compra.", writeError);
-      setError("No se pudo guardar la solicitud en este navegador.");
-    }
+const next = updateJson<PurchaseRequest[]>(purchaseRequestsStorageKey, [], (current) => [...current, request]);    if (!next) {      setError("No se pudo guardar la solicitud en este navegador.");      return;    }    setPurchaseRequests(next);    setError("");
   };
 
 
+const printDemand = () => {    if (!selectedMaterial) return;    printDocument({ ...materialDemandDoc(selectedMaterial, demandRows), user }).catch((printError: unknown) => {      setError(printError instanceof Error ? printError.message : "No se pudo preparar la impresión.");    });  };
   const callsCount = new Set(demandRows.flatMap((row) => row.callIds)).size;
   const totalDemand = demandRows.reduce((sum, row) => sum + row.quantity, 0);
   const stockout = demandRows.find((row) => row.shortage > 0);
@@ -310,7 +314,10 @@ export default function SupplyPage({ user, role }: { user: string; role: Role })
             </Alert>
           )}
           <Paper sx={{ p: 3, maxHeight: 480, overflow: "auto" }}>
-            <Typography variant="h6" sx={{ mb: 2 }}>{selectedMaterial.code} · llamadas y saldo proyectado</Typography>
+            <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center", mb: 2 }}>
+              <Typography variant="h6">{selectedMaterial.code} · llamadas y saldo proyectado</Typography>
+              <Button size="small" variant="outlined" disabled={demandRows.length === 0} onClick={() => printDemand()}>Imprimir / Guardar PDF</Button>
+            </Stack>
             {demandRows.length === 0 ? (
               <Typography color="text.secondary">No hay llamadas que requieran este material en el horizonte de planificación.</Typography>
             ) : (

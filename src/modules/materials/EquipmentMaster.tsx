@@ -4,23 +4,13 @@ import { Alert, Button, MenuItem, Paper, Stack, Table, TableBody, TableCell, Tab
 import { can } from "../../app/permissions";
 import type { Role } from "../../app/roles";
 import { downloadTemplate, parseCsvRow } from "../../data/csv";
-import { keys } from "../../data/keys";
-import { readJson } from "../../data/storage";
+import { readContracts } from "../../data/contracts";
 import { addEquipment, readEquipmentMaster } from "../masterData";
 import type { EquipmentMaster as Equipment } from "../masterData";
 
 type ContractOption = { code: string; client: string };
 
-function readContracts(): ContractOption[] {
-  const contracts = new Map<string, ContractOption>([["CT1234", { code: "CT1234", client: "Fiat Chile" }]]);
-  const list = readJson<unknown>(keys.clients, []);
-  if (!Array.isArray(list)) return [...contracts.values()];
-  for (const item of list) {
-    if (typeof item !== "object" || item === null || !("contractCode" in item) || typeof item.contractCode !== "string" || !item.contractCode.trim()) continue;
-    contracts.set(item.contractCode, { code: item.contractCode, client: "name" in item && typeof item.name === "string" ? item.name : "Cliente" });
-  }
-  return [...contracts.values()];
-}
+const readContractOptions = (): ContractOption[] => readContracts().map((contract) => ({ code: contract.code, client: contract.customer }));
 
 const emptyDraft = { code: "", serialNumber: "", name: "", contractCode: "" };
 
@@ -30,7 +20,7 @@ export default function EquipmentMaster({ user, role }: { user: string; role: Ro
   const [draft, setDraft] = useState(emptyDraft);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const contracts = readContracts();
+  const contracts = readContractOptions();
   const contractCodes = contracts.map((contract) => contract.code);
   const canEdit = can(role, "equipment.edit");
 

@@ -1,13 +1,12 @@
 import { can } from "../app/permissions";
 import type { Role } from "../app/roles";
 import { keys } from "../data/keys";
-import { demoContract } from "../data/contracts";
 import type { Contract } from "../data/contracts";
 import { isPickableLocation, isTransferRef } from "../data/stock";
 import type { StockBin } from "../data/stock";
 import { readJson, runAtomic, updateJson } from "../data/storage";
 import { orderTimeTotals } from "../data/workOrders";
-import type { OrderLine, OrderType, TimeEntry, WorkOrder as BaseWorkOrder } from "../data/workOrders";
+import type { OrderLine, TimeEntry, WorkOrder as BaseWorkOrder } from "../data/workOrders";
 import type { RouteTemplate } from "./maintenanceData";
 import { purchaseOrdersStorageKey, readStoredList } from "./supplyData";
 import type { PurchaseOrder } from "./supplyData";
@@ -57,28 +56,7 @@ function readList<T>(key: string): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
-export function readContracts(): Contract[] {
-  const savedClients = readStoredList<{ name: string; contractCode?: string; wbs?: string[] }>(keys.clients);
-  const configured: Contract[] = savedClients.flatMap((client) => {
-    if (!client.contractCode) return [];
-    const wbs = (client.wbs ?? []).map((code) => {
-      const suffix = code.split("-").pop()?.toUpperCase();
-      const type: OrderType = suffix === "OVH" || suffix === "COR" || suffix === "REP" || suffix === "GAR" || suffix === "ESPERA"
-        ? suffix
-        : "PRE";
-      return { code, type, description: `${client.contractCode} · ${type}`, budget: 0 };
-    });
-    return [{
-      code: client.contractCode,
-      customer: client.name,
-      description: `Contrato de servicio de ${client.name}`,
-      wbs,
-    }];
-  });
-  return [...new Map<string, Contract>(
-    [demoContract, ...configured.filter((contract) => contract.code !== demoContract.code)].map((contract): [string, Contract] => [contract.code, contract]),
-  ).values()];
-}
+export { readContracts } from "../data/contracts";
 
 export function withRuntimeFields(order: BaseWorkOrder & Partial<RuntimeFields>): WorkOrder {
   return {

@@ -2,7 +2,7 @@ import { can } from "../app/permissions";
 import type { Role } from "../app/roles";
 import { useMemo, useState } from "react";
 import { nextDocNumber } from "../data/docNumbering";
-import { keys } from "../data/keys";
+import { readWbsChoices } from "../data/contracts";
 import { printDocument } from "../components/print/printDocument";
 import { purchaseOrderDoc } from "../components/print/templates/purchaseOrderDoc";
 import { quoteComparisonDoc } from "../components/print/templates/quoteComparisonDoc";
@@ -70,8 +70,7 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
   const [selectedQuotes, setSelectedQuotes] = useState<Record<string, string>>({});
   const [manualWbs, setManualWbs] = useState<Record<string, string>>({});
   const plannedCalls = useMemo(() => readPlannedCalls(), []);
-  const wbsChoices = useMemo(() => readStoredList<{ contractCode?: string; wbs?: string[] }>(keys.clients)
-    .flatMap((client) => client.contractCode ? (client.wbs ?? []).map((wbs) => ({ contract: client.contractCode as string, wbs })) : []), []);
+  const wbsChoices = useMemo(() => readWbsChoices(), []);
   const [comparatorModal, setComparatorModal] = useState<PurchaseRequest | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");

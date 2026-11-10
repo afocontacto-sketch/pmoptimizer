@@ -20,6 +20,10 @@ import type { RouteTemplate } from "./maintenanceData";
 import { orderTimeTotals, readTimeEntries } from "../data/workOrders";
 import { purchaseOrdersStorageKey, readStoredList } from "./supplyData";
 import type { PurchaseOrder } from "./supplyData";
+import type { Role } from "../app/roles";
+import { readSession } from "../app/session";
+import EacTable from "./pm/EacTable";
+import PmDashboards from "./pm/PmDashboards";
 
 type WorkOrder = {
   id: string;
@@ -59,7 +63,7 @@ function formatDate(value: string): string {
   return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat("es-CL").format(date) : value;
 }
 
-export default function ProjectManagement({ role = "Supervisor" }: { role?: string }) {
+export default function ProjectManagement({ role = "Supervisor" }: { role?: Role }) {
   const [calls] = useState(() => readPlannedCalls());
   const [routes] = useState(() => readStoredList<RouteTemplate>(routeStorageKey));
   const [orders] = useState(() => readStoredList<WorkOrder>(workOrdersStorageKey));
@@ -199,6 +203,8 @@ export default function ProjectManagement({ role = "Supervisor" }: { role?: stri
       ) : (
         <Alert severity="success">No hay faltantes de materiales sin cobertura de OC aprobada o tránsito registrado para las llamadas proyectadas.</Alert>
       )}
+      <EacTable role={role} user={readSession()?.user ?? role} />
+      <PmDashboards />
       <Paper sx={{ p: 3 }}>
         <Typography variant="h6" sx={{ mb: 2 }}>{role === "PM Proyecto" ? "Resumen de mantenimiento por contrato, mes y año" : "Avance de mantenimiento por llamada"}</Typography>
         {role === "PM Proyecto" ? (

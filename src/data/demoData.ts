@@ -1,7 +1,7 @@
 import { sampleRoutes } from "../modules/maintenanceData";
 import type { PurchaseOrder, PurchaseRequest } from "../modules/supplyData";
 import { approvedBudgetFromContract, demoContract } from "./contracts";
-import type { ApprovedBudget } from "./contracts";
+import type { ApprovedBudget, ClientRecord } from "./contracts";
 import { formatDocNumber } from "./docNumbering";
 import { keys } from "./keys";
 import { demoMaterials } from "./materials";
@@ -108,14 +108,22 @@ export function seedDemoData(now: Date = new Date()): SeedResult {
   }];
   const budgets: ApprovedBudget[] = approvedBudgetFromContract(demoContract, iso);
   // Contrato CT1234 con vigencia y WBS (incluye -GAR); el resto son clientes sin contrato.
-  const clients = [
-    { name: "Comercial Aconcagua" },
-    { name: "Minera Sur Ltda." },
-    { name: "Maderas del Valle" },
-    {
-      name: demoContract.customer, contractCode: demoContract.code, startDate: demoContract.startDate,
-      endDate: demoContract.endDate, wbs: demoContract.wbs.map((element) => element.code),
-    },
+  const baseClient = (index: number, name: string, sector: string): ClientRecord =>
+    ({ id: `CLI-demo-${index}`, code: `CLI-00000${index}`, name, sector, status: "Activo", contracts: [], createdAt: iso });
+  const demoClient = baseClient(4, demoContract.customer, "Transporte");
+  demoClient.contracts = [{
+    id: "CTR-demo-1", code: demoContract.code, name: demoContract.description, clientId: demoClient.id,
+    startDate: demoContract.startDate ?? "", endDate: demoContract.endDate ?? "",
+    budget: demoContract.wbs.reduce((sum, element) => sum + element.budget, 0), createdAt: iso,
+    wbs: demoContract.wbs.map((element, position) => ({
+      id: `WBS-demo-${position}`, code: element.code, type: element.type, description: element.description,
+    })),
+  }];
+  const clients: ClientRecord[] = [
+    baseClient(1, "Comercial Aconcagua", "Retail"),
+    baseClient(2, "Minera Sur Ltda.", "Minería"),
+    baseClient(3, "Maderas del Valle", "Manufactura"),
+    demoClient,
   ];
 
   const writes: [string, unknown][] = [

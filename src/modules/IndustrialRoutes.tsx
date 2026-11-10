@@ -1,4 +1,6 @@
 import { keys } from "../data/keys";
+import { readJson, updateJson } from "../data/storage";
+import { useStoredValue } from "../hooks/useStore";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import {
@@ -90,18 +92,7 @@ function readMaterialOptions(): MaterialOption[] {
   }
 }
 
-function readRoutes(): RouteTemplate[] {
-  const raw = localStorage.getItem(routeStorageKey);
-  if (!raw) return sampleRoutes;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed as RouteTemplate[];
-    console.warn("Las hojas de ruta guardadas no tienen formato de lista; se cargarán los datos demo.");
-  } catch (error) {
-    console.warn("No se pudieron leer las hojas de ruta guardadas; se cargarán los datos demo.", error);
-  }
-  return sampleRoutes;
-}
+function readRoutes(): RouteTemplate[] {  const stored = readJson<unknown>(routeStorageKey, sampleRoutes);  return Array.isArray(stored) ? (stored as RouteTemplate[]) : sampleRoutes;}
 
 function makeRouteId(): string {
   return `HR-IND-${Date.now().toString(36).toUpperCase()}`;
@@ -117,7 +108,7 @@ function money(value: number): string {
 
 export default function IndustrialRoutes({ user, role }: { user: string; role: Role }) {
   const canEdit = can(role, "route.edit");
-  const [routes, setRoutes] = useState<RouteTemplate[]>(readRoutes);
+  const routes = useStoredValue(routeStorageKey, readRoutes);
   const [materialOptions] = useState<MaterialOption[]>(readMaterialOptions);
   const [employees] = useState(readHrEmployees);
   const firstEmployee = employees.find((employee) => employee.direct) ?? employees[0];
@@ -218,8 +209,7 @@ export default function IndustrialRoutes({ user, role }: { user: string; role: R
       operations: finalOperations,
     };
     const next = [...routes, route];
-    setRoutes(next);
-    localStorage.setItem(routeStorageKey, JSON.stringify(next));
+if (!canEdit) {      setError("Tu rol no puede editar hojas de ruta.");      return;    }    if (updateJson<RouteTemplate[]>(routeStorageKey, sampleRoutes, () => next) === null) {      setError("No se pudo guardar la hoja de ruta.");      return;    }
     setRouteName("");
     setOperations([]);
     setOperation({ name: "", durationHours: "1", hourlyCost: String(firstEmployee ? getEmployeeHourlyRate(firstEmployee.name, 0) : 0), technician: firstEmployee?.name ?? "" });

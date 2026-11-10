@@ -1,4 +1,5 @@
 import { keys } from "../data/keys";
+import { readClients, readContracts } from "../data/contracts";
 import { orderTimeTotals, readTimeEntries } from "../data/workOrders";
 import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
@@ -290,16 +291,14 @@ export default function AccountingPage({ role }: { role: string }) {
   const activeExpenseAccounts = finance.accounts.filter((account) => account.type === "Gasto");
   const activeRevenueAccounts = finance.accounts.filter((account) => account.type === "Ingreso");
   const purchaseOrders = readFinanceList<PurchaseOrder>(purchaseOrdersStorageKey);
-  const savedClients = readFinanceList<ClientMaster>(keys.clients, fallbackClients);
+  const savedClients: ClientMaster[] = readClients().map((client) => ({ name: client.name }));
   const clients = savedClients.length ? savedClients : fallbackClients;
   const clientNames = [...new Set(clients.map((client) => client.name).filter(Boolean))];
   const savedSupplierNames = readFinanceList<SupplierMaster>(suppliersStorageKey).map((supplier) => supplier.name);
   const quotedSupplierNames = readFinanceList<{ quotes?: { supplier: string }[] }>(keys.purchaseRequests)
     .flatMap((request) => request.quotes?.map((quote) => quote.supplier) ?? []);
   const supplierNames = [...new Set([...savedSupplierNames, ...purchaseOrders.map((order) => order.supplier), ...quotedSupplierNames].filter(Boolean))];
-  const contractOptions = [...new Map<string, ClientMaster>(clients
-    .filter((client): client is ClientMaster & { contractCode: string } => Boolean(client.contractCode))
-    .map((client): [string, ClientMaster] => [client.contractCode, client])).values()];
+  const contractOptions: (ClientMaster & { contractCode: string })[] = readContracts().map((contract) => ({ name: contract.customer, contractCode: contract.code, wbs: contract.wbs.map((element) => element.code) }));
   const selectedClient = contractOptions.find((client) => client.contractCode === draft.contract);
   const wbsOptions = selectedClient?.wbs ?? [];
   const payrollRuns = readFinanceList<{

@@ -31,11 +31,11 @@ describe("bootstrapStorage + seedDemoData", () => {
       .toEqual(["51000001", "61000001", "71000001", "81000001", "13000001"]);
     expect(read<{ id: string }[]>(keys.purchaseOrders).map((order) => order.id)).toEqual(["31000001", "31000002"]);
     expect(read<{ id: string }[]>(keys.purchaseRequests)[0].id).toBe("21000001");
-    const client = read<{ contractCode?: string; startDate?: string; endDate?: string; wbs?: string[] }[]>(keys.clients)
-      .find((item) => item.contractCode === "CT1234");
+    const client = read<{ contracts: { code: string; startDate?: string; endDate?: string; wbs: { code: string }[] }[] }[]>(keys.clients)
+      .flatMap((item) => item.contracts).find((item) => item.code === "CT1234");
     expect(client?.startDate).toBeTruthy();
     expect(client?.endDate).toBeTruthy();
-    expect(client?.wbs?.some((code) => code.endsWith("-GAR"))).toBe(true);
+    expect(client?.wbs.some((element) => element.code.endsWith("-GAR"))).toBe(true);
   });
 
   test("contadores coherentes: el siguiente número continúa la serie", () => {
