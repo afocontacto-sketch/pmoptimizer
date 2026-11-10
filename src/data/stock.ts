@@ -1,5 +1,6 @@
 import { can } from "../app/permissions";
 import type { Role } from "../app/roles";
+import { appendAudit } from "./audit";
 import { nextDocNumber } from "./docNumbering";
 import { keys } from "./keys";
 import { readMaterials } from "./materials";
@@ -36,7 +37,8 @@ export type StockMovementType =
   | "Ajuste inventario"
   | "Traspaso emitido"
   | "Traspaso recibido"
-  | "Diferencia traspaso";
+  | "Diferencia traspaso"
+  | "Traslado";
 
 export type StockMovement = {
   id: string;
@@ -55,7 +57,7 @@ export type StockMovement = {
   transferId?: string;
 };
 
-export type TransferStatus = "En tránsito" | "Recibido" | "Recibido con diferencia";
+export type TransferStatus = "En tránsito" | "Recibido" | "Recibido con diferencia" | "Cerrado con devolución";
 
 export type TransferLine = {
   code: string;
@@ -373,6 +375,7 @@ export function receiveTransfer(
   const transfer = readTransfers().find((item) => item.id === transferId);
   if (!transfer) return fail(`No existe el traspaso ${transferId}.`);
   if (transfer.status === "Recibido") return fail("El traspaso ya fue recibido por completo.");
+  if (transfer.status === "Cerrado con devolución") return fail("El traspaso ya fue cerrado con devolución al origen.");
   const location = (options.location ?? "").trim().toUpperCase() || "REC-UBICAR";
   if (location === "TRANSITO" || location === "REC-CALIDAD") return fail("Indica una ubicación de recepción válida.");
   const now = options.now ?? new Date();
@@ -417,6 +420,80 @@ export function receiveTransfer(
     () => updateJson<TransferOrder[]>(keys.transferOrders, [], (current) => current.map((item) => item.id === transferId ? updated : item)) !== null,
   ]);
   return saved ? ok(updated) : fail(saveFailed);
+}
+
+// M7: el saldo faltante de un traspaso con diferencia vuelve al almacén de origen como bin nuevo y el traspaso queda cerrado.
+export function closeTransferDifference(
+  transferId: string,
+  actor: Actor,
+  options: { now?: Date; materials?: MaterialRecord[] } = {},
+): Result<TransferOrder> {
+  if (!can(actor.role, "warehouse.transfer") && !can(actor.role, "warehouse.receiveTransfer")) {
+    return fail("Tu rol no tiene permiso para cerrar diferencias de traspaso.");
+  }
+  const transfer = readTransfers().find((item) => item.id === transferId);
+  if (!transfer) return fail(`No existe el traspaso ${transferId}.`);
+  if (transfer.status === "Cerrado con devolución") return fail("El traspaso ya fue cerrado con devolución.");
+  if (transfer.status !== "Recibido con diferencia") return fail("Solo se puede devolver el saldo de un traspaso recibido con diferencia.");
+  const now = options.now ?? new Date();
+  const materials = options.materials ?? readMaterials();
+  const allBins = readBins();
+  const movements = readMovements();
+  const returns = transfer.lines.map((line) => {
+    const qty = Math.max(0, line.sent - (line.received ?? 0));
+    const emitted = movements.find((m) => m.transferId === transferId && m.type === "Traspaso emitido" && m.code === line.code);
+    const originalLocation = emitted?.from.slice(transfer.fromWarehouse.length + 1) ?? "";
+    const exists = originalLocation !== "" && allBins.some((bin) => bin.warehouse === transfer.fromWarehouse && bin.location === originalLocation);
+    const target = receivingTarget(line.code, materials, "REC-UBICAR");
+    return { line, qty, status: target.status, location: exists ? originalLocation : target.location };
+  }).filter((item) => item.qty > 0);
+  const updated: TransferOrder = { ...transfer, status: "Cerrado con devolución" };
+  const saved = runAtomic([keys.warehouseBins, keys.warehouseMovements, keys.transferOrders, keys.auditLog], [
+    () => updateJson<StockBin[]>(keys.warehouseBins, [], (current) => [
+      ...current.map((bin) => {
+        if (bin.status !== "En tránsito" || bin.reference !== transferId) return bin;
+        const back = returns.find((item) => item.line.code === bin.code)?.qty ?? 0;
+        return back ? { ...bin, quantity: Math.max(0, bin.quantity - back) } : bin;
+      }),
+      ...returns.map(({ line, qty, status, location }): StockBin => ({
+        id: binId(`BIN-TRD${transferId}`), code: line.code, name: line.name, warehouse: transfer.fromWarehouse, location, status,
+        quantity: qty, reserved: 0, unit: line.unit, unitCost: line.unitCost, reference: transferId, receivedAt: now.toISOString(),
+      })),
+    ]) !== null,
+    () => updateJson<StockMovement[]>(keys.warehouseMovements, [], (current) => [
+      ...returns.map(({ line, qty, location }): StockMovement => ({
+        id: movementId(), date: now.toISOString(), type: "Diferencia traspaso", code: line.code, quantity: qty,
+        from: `${transfer.toWarehouse}/TRANSITO`, to: `${transfer.fromWarehouse}/${location}`,
+        reference: transferId, user: actor.user, transferId, unitCost: line.unitCost,
+      })),
+      ...current,
+    ]) !== null,
+    () => updateJson<TransferOrder[]>(keys.transferOrders, [], (current) => current.map((item) => item.id === transferId ? updated : item)) !== null,
+    () => appendAudit({
+      user: actor.user, role: actor.role, entity: "transfer", entityId: transferId, action: "closeDifference",
+      before: { status: transfer.status }, after: { status: updated.status, returned: returns.map((item) => ({ code: item.line.code, qty: item.qty })) },
+    }),
+  ]);
+  return saved ? ok(updated) : fail(saveFailed);
+}
+
+// M7: Traslado manual atómico (bin origen, bin destino y movimiento con costo unitario).
+export function manualTransfer(sourceId: string, quantity: number, destination: Omit<StockBin, "id" | "quantity" | "reserved">, actor: Actor, now: Date = new Date()): Result<StockBin> {
+  if (!can(actor.role, "warehouse.transfer")) return fail("Tu rol no tiene permiso para trasladar stock.");
+  const source = readBins().find((item) => item.id === sourceId);
+  if (!source) return fail("No existe la ubicación de origen.");
+  if (!Number.isFinite(quantity) || quantity <= 0 || quantity > source.quantity - source.reserved) return fail("Cantidad inválida para el traslado.");
+  const created: StockBin = { ...destination, id: binId("BIN-TR"), quantity, reserved: 0 };
+  const saved = runAtomic([keys.warehouseBins, keys.warehouseMovements], [
+    () => updateJson<StockBin[]>(keys.warehouseBins, [], (current) =>
+      current.map((bin) => bin.id === sourceId ? { ...bin, quantity: bin.quantity - quantity } : bin).concat(created)) !== null,
+    () => updateJson<StockMovement[]>(keys.warehouseMovements, [], (current) => [{
+      id: movementId(), date: now.toISOString(), type: "Traslado", code: source.code, quantity,
+      from: `${source.warehouse}/${source.location}`, to: `${created.warehouse}/${created.location}`,
+      reference: source.id, user: actor.user, unitCost: source.unitCost,
+    }, ...current]) !== null,
+  ]);
+  return saved ? ok(created) : fail(saveFailed);
 }
 
 export const transferPending = (transfer: TransferOrder): number =>

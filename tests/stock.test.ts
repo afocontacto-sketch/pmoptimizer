@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { keys } from "../src/data/keys";
-import { demandByMaterial, dispatchBoard, emitTransfer, pickLine, receiveTransfer, stockByMaterial } from "../src/data/stock";
+import { closeTransferDifference, demandByMaterial, dispatchBoard, emitTransfer, pickLine, receiveTransfer, stockByMaterial } from "../src/data/stock";
 import type { StockBin, StockMovement, TransferOrder } from "../src/data/stock";
 import type { WorkOrder } from "../src/data/workOrders";
 import type { MaterialRecord } from "../src/data/materials";
@@ -152,6 +152,44 @@ describe("traspasos", () => {
     const last = receiveTransfer("32000002", { "MAT-1": 1 }, almacen);
     expect(last.ok && last.value.status).toBe("Recibido");
     expect(bins().find((b) => b.status === "En tránsito")?.quantity).toBe(0);
+  });
+});
+
+describe("closeTransferDifference (M7)", () => {
+  const emitAndReceive = () => {
+    put(keys.warehouseBins, [bin("B1", { location: "A-02", quantity: 10 })]);
+    const emitted = emitTransfer({ fromWarehouse: "Central", toWarehouse: "Taller", lines: [{ code: "MAT-1", qty: 5 }] }, almacen);
+    if (!emitted.ok) throw new Error(emitted.error);
+    receiveTransfer(emitted.value.id, { "MAT-1": 4 }, almacen);
+    return emitted.value.id;
+  };
+
+  test("devuelve el faltante al origen, deja tránsito en cero y cierra; no se repite", () => {
+    const id = emitAndReceive();
+    const result = closeTransferDifference(id, almacen);
+    expect(result.ok && result.value.status).toBe("Cerrado con devolución");
+    expect(stockByMaterial(bins())[0].transit).toBe(0);
+    expect(bins().find((b) => b.warehouse === "Central" && b.reference === id)).toMatchObject({ quantity: 1, location: "A-02", status: "Libre utilización" });
+    expect(readStore<StockMovement[]>(keys.warehouseMovements, []).some((m) => m.type === "Diferencia traspaso" && m.transferId === id)).toBe(true);
+    expect(closeTransferDifference(id, almacen).ok).toBe(false);
+    expect(stockByMaterial(bins())[0].total).toBe(10);
+  });
+
+  test("rechaza rol sin permiso y hace rollback si falla la escritura", () => {
+    const id = emitAndReceive();
+    expect(closeTransferDifference(id, tecnico).ok).toBe(false);
+    const before = JSON.stringify([bins(), readStore<TransferOrder[]>(keys.transferOrders, [])]);
+    const original = localStorage.setItem;
+    localStorage.setItem = (key: string, value: string) => {
+      if (key === keys.transferOrders) throw new Error("lleno");
+      original(key, value);
+    };
+    try {
+      expect(closeTransferDifference(id, almacen).ok).toBe(false);
+    } finally {
+      localStorage.setItem = original;
+    }
+    expect(JSON.stringify([bins(), readStore<TransferOrder[]>(keys.transferOrders, [])])).toBe(before);
   });
 });
 

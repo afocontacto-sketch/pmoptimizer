@@ -18,7 +18,7 @@ import {
 } from "@mui/material";
 import { can } from "../../app/permissions";
 import type { Role } from "../../app/roles";
-import type { StockBin } from "../../data/stock";
+import { manualTransfer } from "../../data/stock";
 import { useOperations } from "../../hooks/useOperations";
 import type { Feedback } from "../../hooks/useOperations";
 import { isPickableLocation, makeMovement } from "../operationsData";
@@ -103,28 +103,18 @@ export default function KardexTab({ user, role, setMessage, setError, importWare
       setError("Indica un almacén y ubicación destino distintos al origen.");
       return;
     }
-    const destination: StockBin = {
+    const result = manualTransfer(source.id, quantity, {
       ...source,
-      id: `BIN-TR-${Date.now()}`,
       warehouse: transfer.toQuality ? "Almacén Calidad" : transfer.warehouse.trim(),
       location,
       status: transfer.toQuality ? "Bloqueado calidad" : "Libre utilización",
-      quantity,
-      reserved: 0,
       reference: `Traslado desde ${source.warehouse}/${source.location}`,
-    };
-    setStock((current) => current
-      .map((bin) => bin.id === source.id ? { ...bin, quantity: bin.quantity - quantity } : bin)
-      .concat(destination));
-    recordMovement(makeMovement(
-      "Traslado",
-      source.code,
-      quantity,
-      `${source.warehouse}/${source.location}`,
-      `${destination.warehouse}/${destination.location}`,
-      source.id,
-      user,
-    ));
+    }, { user, role });
+    if (!result.ok) {
+      setError(result.error);
+      return;
+    }
+    const destination = result.value;
     setMessage(`${quantity} ${source.unit} de ${source.code} trasladados a ${destination.warehouse}/${destination.location}${transfer.toQuality ? " para inspección" : ""}.`);
     setError("");
   };

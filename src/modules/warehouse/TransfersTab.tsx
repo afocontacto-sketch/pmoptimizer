@@ -20,7 +20,7 @@ import type { Role } from "../../app/roles";
 import { printDocument } from "../../components/print/printDocument";
 import { transferDoc } from "../../components/print/templates/transferDoc";
 import { keys } from "../../data/keys";
-import { emitTransfer, readTransfers, receiveTransfer, stockByMaterial, transferPending } from "../../data/stock";
+import { closeTransferDifference, emitTransfer, readTransfers, receiveTransfer, stockByMaterial, transferPending } from "../../data/stock";
 import type { TransferOrder } from "../../data/stock";
 import { useOperations } from "../../hooks/useOperations";
 import type { Feedback } from "../../hooks/useOperations";
@@ -80,6 +80,18 @@ export default function TransfersTab({ user, role, setMessage, setError }: Props
     setMessage(`Traspaso ${transfer.id}: ${result.value.status}.`);
   };
 
+  const giveBack = (transfer: TransferOrder) => {
+    if (!window.confirm(`¿Devolver ${transferPending(transfer)} unidades pendientes del traspaso ${transfer.id} a ${transfer.fromWarehouse}? Se cierra el traspaso.`)) return;
+    const result = closeTransferDifference(transfer.id, { user, role });
+    if (!result.ok) {
+      setMessage("");
+      setError(result.error);
+      return;
+    }
+    setError("");
+    setMessage(`Traspaso ${transfer.id}: saldo devuelto a ${transfer.fromWarehouse}.`);
+  };
+
   return (
     <Stack spacing={2}>
       {withDifference.map((transfer) => (
@@ -126,16 +138,17 @@ export default function TransfersTab({ user, role, setMessage, setError }: Props
                 <TableRow key={transfer.id}>
                   <TableCell>{transfer.id}<Typography variant="caption" sx={{ display: "block" }}>{transfer.createdBy}</Typography></TableCell>
                   <TableCell>{transfer.fromWarehouse} → {transfer.toWarehouse}</TableCell>
-                  <TableCell><Chip size="small" label={transfer.status} color={transfer.status === "Recibido" ? "success" : transfer.status === "En tránsito" ? "info" : "warning"} /></TableCell>
+                  <TableCell><Chip size="small" label={transfer.status} color={transfer.status === "Recibido" || transfer.status === "Cerrado con devolución" ? "success" : transfer.status === "En tránsito" ? "info" : "warning"} /></TableCell>
                   <TableCell>{transfer.lines.map((line) => <Typography variant="body2" key={line.code}>{line.code}: {line.sent} / {line.received ?? 0}</Typography>)}</TableCell>
                   <TableCell>
-                    {canReceive && transfer.status !== "Recibido" && (
+                    {canReceive && transfer.status !== "Recibido" && transfer.status !== "Cerrado con devolución" && (
                       <Stack spacing={1}>
                         {transfer.lines.filter((line) => line.sent - (line.received ?? 0) > 0).map((line) => (
                           <TextField key={line.code} size="small" type="number" label={`${line.code} recibido`} value={receipt[`${transfer.id}:${line.code}`] ?? ""} onChange={(event) => setReceipt((current) => ({ ...current, [`${transfer.id}:${line.code}`]: event.target.value }))} slotProps={{ htmlInput: { min: 0, max: line.sent - (line.received ?? 0), step: "any" } }} />
                         ))}
                         <TextField size="small" label="Ubicación (opcional)" value={locations[transfer.id] ?? ""} onChange={(event) => setLocations((current) => ({ ...current, [transfer.id]: event.target.value }))} />
                         <Button size="small" variant="contained" onClick={() => receive(transfer)}>Recibir</Button>
+                        {transfer.status === "Recibido con diferencia" && <Button size="small" color="warning" variant="outlined" onClick={() => giveBack(transfer)}>Devolver saldo a origen</Button>}
                       </Stack>
                     )}
                   </TableCell>
