@@ -56,15 +56,16 @@ import {
 } from "react-router-dom";
 import MaintenancePlanning from "./modules/MaintenancePlanning";
 import IndustrialRoutes from "./modules/IndustrialRoutes";
-import WorkOrders from "./modules/WorkOrders";
+import TechnicianInbox from "./modules/technician/TechnicianInbox";
+import WarehousePage from "./modules/warehouse/WarehousePage";
 import SupplyPage from "./modules/SupplyPage";
 import PurchasingPage from "./modules/PurchasingPage";
 import ProjectManagement from "./modules/ProjectManagement";
 import AccountingPage from "./modules/AccountingPage";
 import HumanResourcesPage from "./modules/HumanResourcesPage";
 import ClientsPage from "./modules/ClientsPage";
-import QualityPage from "./modules/QualityPage";
-import ProductionPage from "./modules/ProductionPage";
+import QualityPage from "./modules/quality/QualityPage";
+import ProductionPage from "./modules/production/ProductionPage";
 import { equipmentStorageKey, readEquipmentMaster } from "./modules/masterData";
 import type { EquipmentMaster } from "./modules/masterData";
 import { BrandLogo } from "./components/BrandLogo";
@@ -558,15 +559,15 @@ function AppLayout({ session, onLogout }: AppLayoutProps) {
             <Route path="/clientes" element={<RoleRoute role={session.role} path="/clientes"><ClientsPage /></RoleRoute>} />
             <Route path="/materiales" element={<RoleRoute role={session.role} path="/materiales"><MaterialesPage role={session.role} /></RoleRoute>} />
             <Route path="/produccion" element={<RoleRoute role={session.role} path="/produccion"><ProductionPage user={session.user} role={session.role} /></RoleRoute>} />
-            <Route path="/bandeja" element={<RoleRoute role={session.role} path="/bandeja"><WorkOrders user={session.user} role={session.role} defaultTab={0} scope="operations" /></RoleRoute>} />
+            <Route path="/bandeja" element={<RoleRoute role={session.role} path="/bandeja"><TechnicianInbox user={session.user} role={session.role} /></RoleRoute>} />
             {Object.entries(legacyRedirects).map(([from, to]) => (
               <Route key={from} path={from} element={<Navigate to={to} replace />} />
             ))}
-            <Route path="/almacen" element={<RoleRoute role={session.role} path="/almacen"><WorkOrders user={session.user} role={session.role} defaultTab={2} scope="warehouse" /></RoleRoute>} />
+            <Route path="/almacen" element={<RoleRoute role={session.role} path="/almacen"><WarehousePage user={session.user} role={session.role} /></RoleRoute>} />
             <Route path="/compras" element={<RoleRoute role={session.role} path="/compras"><PurchasingPage role={session.role} user={session.user} /></RoleRoute>} />
             <Route path="/contabilidad" element={<RoleRoute role={session.role} path="/contabilidad"><AccountingPage role={session.role} /></RoleRoute>} />
             <Route path="/rrhh" element={<RoleRoute role={session.role} path="/rrhh"><HumanResourcesPage /></RoleRoute>} />
-            <Route path="/calidad" element={<RoleRoute role={session.role} path="/calidad"><QualityPage /></RoleRoute>} />
+            <Route path="/calidad" element={<RoleRoute role={session.role} path="/calidad"><QualityPage user={session.user} role={session.role} /></RoleRoute>} />
             <Route path="/ingenieria" element={<RoleRoute role={session.role} path="/ingenieria"><IndustrialRoutes user={session.user} /></RoleRoute>} />
             <Route path="/planes-mantenimiento" element={<RoleRoute role={session.role} path="/planes-mantenimiento"><MaintenancePlanning role={session.role} /></RoleRoute>} />
             <Route path="/planning" element={<RoleRoute role={session.role} path="/planning"><MaintenancePlanning role={session.role} /></RoleRoute>} />

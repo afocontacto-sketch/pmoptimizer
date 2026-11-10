@@ -1,4 +1,4 @@
-import { keys } from "../data/keys";
+import { keys } from "../../data/keys";
 import { useEffect, useState } from "react";
 import {
   Box,
@@ -62,7 +62,7 @@ function readQualityMaterials(): QualityMaterial[] {
   }
 }
 
-export default function QualityPage() {
+export default function QualityRecordsTab() {
   const [checklists, setChecklists] = useState<QualityChecklist[]>([]);
   const [materials, setMaterials] = useState<QualityMaterial[]>([]);
 
@@ -92,10 +92,7 @@ export default function QualityPage() {
   const inspeccionadosPercentage = materialStats.total > 0 ? (materialStats.inspeccionados / materialStats.total) * 100 : 0;
 
   return (
-    <Box sx={{ p: 3 }}>
-      <Typography variant="h4" sx={{ mb: 3, fontWeight: 700 }}>
-        Gestión de Calidad
-      </Typography>
+    <Box>
 
       {/* Dashboards */}
       <Stack direction={{ xs: "column", md: "row" }} spacing={3} sx={{ mb: 4 }}>

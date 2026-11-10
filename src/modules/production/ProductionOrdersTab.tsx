@@ -1,4 +1,4 @@
-import { keys } from "../data/keys";
+import { keys } from "../../data/keys";
 import { useEffect, useState } from "react";
 import {
   Box,
@@ -81,7 +81,7 @@ function saveOrders(orders: ProductionOrder[]): void {
   localStorage.setItem(productionOrdersKey, JSON.stringify(orders));
 }
 
-export default function ProductionPage({ user, role }: { user: string; role: string }) {
+export default function ProductionOrdersTab({ user, role }: { user: string; role: string }) {
   const [orders, setOrders] = useState<ProductionOrder[]>([]);
   const [openDialog, setOpenDialog] = useState(false);
   const [editingOrder, setEditingOrder] = useState<ProductionOrder | null>(null);
@@ -222,9 +222,9 @@ export default function ProductionPage({ user, role }: { user: string; role: str
   const closedOrders = orders.filter((o) => o.status === "Cerrada");
 
   return (
-    <Box sx={{ p: 3 }}>
+    <Box>
       <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center", mb: 3 }}>
-        <Typography variant="h4">🏭 Producción - Órdenes de Trabajo</Typography>
+        <Typography variant="h6">Órdenes de producción (registro)</Typography>
         {canCreateCorrective && (
           <Button variant="contained" startIcon={<AddIcon />} onClick={handleNewOrder}>
             Nueva Orden Correctiva
