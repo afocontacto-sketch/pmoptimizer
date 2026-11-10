@@ -1,4 +1,9 @@
+import { can } from "../app/permissions";
+import type { Role } from "../app/roles";
 import { keys } from "../data/keys";
+import { fail, ok } from "../data/result";
+import type { Result } from "../data/result";
+import { readJson, writeJson } from "../data/storage";
 
 export const equipmentStorageKey = keys.equipment;
 
@@ -41,4 +46,25 @@ export function readEquipmentMaster(): EquipmentMaster[] {
     console.warn("No se pudo leer el maestro de equipos guardado.", error);
     return demoEquipment;
   }
+}
+
+// Alta de equipos (uno o carga masiva). Valida unicidad de código/serie y contrato existente; todo o nada.
+export function addEquipment(items: EquipmentMaster[], contractCodes: string[], actor: { user: string; role: Role }): Result<number> {
+  if (!can(actor.role, "equipment.edit")) return fail("Solo Ingeniería e Industrial o Administrador puede editar equipos.");
+  const current = readEquipmentMaster();
+  const codes = new Set(current.map((item) => item.code.toLowerCase()));
+  const serials = new Set(current.map((item) => item.serialNumber?.toLowerCase()).filter(Boolean));
+  for (const [index, item] of items.entries()) {
+    const label = `Fila ${index + 1}`;
+    if (!item.code.trim() || !item.name.trim() || !item.serialNumber?.trim()) return fail(`${label}: código, número de serie y descripción son obligatorios.`);
+    if (item.contractCode && !contractCodes.includes(item.contractCode)) return fail(`${label}: el contrato ${item.contractCode} no existe.`);
+    const code = item.code.toLowerCase();
+    const serial = item.serialNumber.toLowerCase();
+    if (codes.has(code)) return fail(`${label}: el código ${item.code} ya existe o está repetido.`);
+    if (serials.has(serial)) return fail(`${label}: el número de serie ${item.serialNumber} ya existe o está repetido.`);
+    codes.add(code);
+    serials.add(serial);
+  }
+  const stored = readJson<EquipmentMaster[]>(equipmentStorageKey, []);
+  return writeJson(equipmentStorageKey, [...stored, ...items]) ? ok(items.length) : fail("No se pudo guardar el equipo en este navegador.");
 }

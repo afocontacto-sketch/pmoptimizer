@@ -73,3 +73,15 @@ export function approvedBudgetFromContract(contract: Contract, isoDate: string):
       approvedAt: isoDate,
     }));
 }
+
+// Sufijos WBS configurables por contrato (IND = tiempo improductivo).
+export const wbsSuffixes = ["PRE", "OVH", "COR", "GAR", "REP", "IND"] as const;
+
+// Contratos nuevos exigen vigencia completa y coherente (fin no anterior al inicio). Devuelve el error o null.
+export function validateContractDates(startDate?: string, endDate?: string): string | null {
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  if (!startDate || !endDate) return "Indica fecha de inicio y de fin del contrato.";
+  if (!iso.test(startDate) || !iso.test(endDate)) return "Las fechas del contrato no son válidas.";
+  if (endDate < startDate) return "La fecha de fin no puede ser anterior a la de inicio.";
+  return null;
+}

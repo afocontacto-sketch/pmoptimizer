@@ -1,6 +1,6 @@
 import { keys } from "../data/keys";
 import { orderTimeTotals, readTimeEntries } from "../data/workOrders";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import {
   Alert,
@@ -46,7 +46,9 @@ import type {
   JournalEntry,
   JournalLine,
 } from "./financeData";
-import { purchaseOrdersStorageKey, suppliersStorageKey } from "./supplyData";
+import { printDocument } from "../components/print/printDocument";
+import { invoiceDoc } from "../components/print/templates/invoiceDoc";
+import { purchaseInvoiceWbsError, purchaseOrdersStorageKey, suppliersStorageKey } from "./supplyData";
 import type { PurchaseOrder, SupplierMaster } from "./supplyData";
 import { payrollRunsStorageKey } from "./HumanResourcesPage";
 
@@ -56,7 +58,8 @@ type OperationalOrder = {
   contract: string;
   wbs: string;
   equipment: string;
-  consumedMaterials: { code: string; quantity: number; unitCost?: number }[];
+  consumedMaterials?: { code: string; quantity: number; unitCost?: number }[];
+  materials?: { code: string; picked: number; unitCostAvg?: number }[];
 };
 type StockBin = { code: string; quantity: number; unitCost: number };
 type ClientMaster = { name: string; contractCode?: string; wbs?: string[] };
@@ -219,7 +222,11 @@ function readOperationsCost(): { id: string; contract: string; wbs: string; equi
   }
   return orders.filter((order) => order.status === "Cerrada").map((order) => {
     const labor = orderTimeTotals(order.id, timeEntries, Date.now()).laborCost;
-    const materials = (order.consumedMaterials ?? []).reduce((total, item) => {
+    // OT nuevas: materials.picked x costo medio; las antiguas sin materials usan consumedMaterials.
+    const consumed = order.materials?.length
+      ? order.materials.map((item) => ({ code: item.code, quantity: item.picked, unitCost: item.unitCostAvg }))
+      : order.consumedMaterials ?? [];
+    const materials = consumed.reduce((total, item) => {
       const balance = averageCost.get(item.code);
       const unitCost = item.unitCost ?? (balance && balance.quantity > 0 ? balance.value / balance.quantity : 0);
       return total + Math.max(0, item.quantity) * Math.max(0, unitCost);
@@ -263,7 +270,6 @@ export default function AccountingPage({ role }: { role: string }) {
   const [draft, setDraft] = useState<InvoiceDraft>(() => newInvoiceDraft("Compra"));
   const [accountDraft, setAccountDraft] = useState<AccountDraft>({ code: "", name: "", type: "Gasto" });
   const [paymentTarget, setPaymentTarget] = useState<string | null>(null);
-  const [printInvoice, setPrintInvoice] = useState<FinanceInvoice | null>(null);
   const [paymentDate, setPaymentDate] = useState(today());
   const [paymentReference, setPaymentReference] = useState("");
   const [error, setError] = useState("");
@@ -280,15 +286,6 @@ export default function AccountingPage({ role }: { role: string }) {
     readFinanceList<{ runId: string; period: string; date: string; amount: number; reference: string }>(keys.payrollPayments, [])
   );
   const canEdit = role === "Administrador" || role === "Contabilidad";
-
-  useEffect(() => {
-    if (!printInvoice) return;
-    const timer = window.setTimeout(() => {
-      window.print();
-      setPrintInvoice(null);
-    }, 100);
-    return () => window.clearTimeout(timer);
-  }, [printInvoice]);
 
   const activeExpenseAccounts = finance.accounts.filter((account) => account.type === "Gasto");
   const activeRevenueAccounts = finance.accounts.filter((account) => account.type === "Ingreso");
@@ -384,6 +381,11 @@ export default function AccountingPage({ role }: { role: string }) {
       !Number.isFinite(exchangeRate) || exchangeRate <= 0 ||
       !validDate(draft.issueDate) || !validDate(draft.dueDate) || draft.dueDate < draft.issueDate) {
       setError("Completa folio, contraparte, cuenta, montos y fechas válidos. El vencimiento no puede ser anterior a la emisión.");
+      return;
+    }
+    const wbsError = purchaseInvoiceWbsError({ kind: draft.kind, purchaseOrder: draft.purchaseOrder, wbs: draft.wbs });
+    if (wbsError) {
+      setError(wbsError);
       return;
     }
     const alreadyExists = finance.invoices.some((invoice) =>
@@ -730,13 +732,13 @@ export default function AccountingPage({ role }: { role: string }) {
                     </Grid>
                   )}
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField select label="Contrato (opcional)" value={draft.contract} onChange={(event) => setDraft((current) => ({ ...current, contract: event.target.value, wbs: "" }))} fullWidth>
+                    <TextField select label={draft.kind === "Compra" && !draft.purchaseOrder ? "Contrato (obligatorio sin OC)" : "Contrato (opcional)"} value={draft.contract} onChange={(event) => setDraft((current) => ({ ...current, contract: event.target.value, wbs: "" }))} fullWidth>
                       <MenuItem value="">Sin contrato</MenuItem>
                       {contractOptions.map((contract) => <MenuItem key={contract.contractCode} value={contract.contractCode}>{contract.contractCode} · {contract.name}</MenuItem>)}
                     </TextField>
                   </Grid>
                   <Grid size={{ xs: 12, sm: 6, md: 4 }}>
-                    <TextField select label="Elemento WBS (opcional)" value={draft.wbs} disabled={!draft.contract} onChange={(event) => setDraft((current) => ({ ...current, wbs: event.target.value }))} fullWidth>
+                    <TextField select label={draft.kind === "Compra" && !draft.purchaseOrder ? "Elemento WBS (obligatorio sin OC)" : "Elemento WBS (opcional)"} value={draft.wbs} disabled={!draft.contract} onChange={(event) => setDraft((current) => ({ ...current, wbs: event.target.value }))} fullWidth>
                       <MenuItem value="">Sin WBS</MenuItem>
                       {wbsOptions.map((code) => <MenuItem key={code} value={code}>{code}</MenuItem>)}
                     </TextField>
@@ -782,7 +784,11 @@ export default function AccountingPage({ role }: { role: string }) {
             <InvoiceTable
               invoices={finance.invoices.filter((invoice) => invoice.kind === (tab === 1 ? "Compra" : "Venta"))}
               onPay={beginPayment}
-              onPrint={setPrintInvoice}
+              onPrint={(invoice) => {
+                printDocument(invoiceDoc(invoice)).catch((printError: unknown) => {
+                  setError(printError instanceof Error ? printError.message : "No se pudo imprimir el documento.");
+                });
+              }}
               canEdit={canEdit}
             />
             {tab === 1 && (
@@ -797,7 +803,6 @@ export default function AccountingPage({ role }: { role: string }) {
               </Box>
             )}
           </Paper>
-          {printInvoice && <InvoicePrint invoice={printInvoice} />}
         </Stack>
       )}
 
@@ -1092,55 +1097,5 @@ function InvoiceTable({
         </TableRow>
       ))}</TableBody>
     </Table>
-  );
-}
-
-function InvoicePrint({ invoice }: { invoice: FinanceInvoice }) {
-  const isTestInvoice = invoice.kind === "Venta";
-  return (
-    <Box className="document-print-area">
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "2px solid #166534", paddingBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <img
-            src="/PMO.jfif"
-            alt=""
-            onError={(event) => { event.currentTarget.style.display = "none"; }}
-            style={{ maxWidth: 64, maxHeight: 54, objectFit: "contain" }}
-          />
-          <strong style={{ fontSize: 20, letterSpacing: 1 }}>PMOPTIMIZER</strong>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ color: "#166534", fontSize: 12, fontWeight: 700, letterSpacing: 1 }}>
-            {isTestInvoice ? "FACTURA DE PRUEBA · SIN VALIDEZ TRIBUTARIA" : "REGISTRO DE FACTURA"}
-          </div>
-          <div style={{ fontSize: 22, fontWeight: 700 }}>{invoice.documentType} {invoice.number}</div>
-        </div>
-      </header>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, margin: "28px 0" }}>
-        <div><small style={{ color: "#64748b" }}>{invoice.kind === "Venta" ? "CLIENTE" : "PROVEEDOR"}</small><div style={{ fontSize: 16, fontWeight: 600 }}>{invoice.counterparty}</div></div>
-        <div><small style={{ color: "#64748b" }}>FECHA DE EMISIÓN</small><div>{invoice.issueDate}</div></div>
-        <div><small style={{ color: "#64748b" }}>FECHA DE VENCIMIENTO</small><div>{invoice.dueDate}</div></div>
-        <div><small style={{ color: "#64748b" }}>REFERENCIA</small><div>{invoice.contract ?? invoice.purchaseOrder ?? "—"}{invoice.wbs ? ` · WBS ${invoice.wbs}` : ""}</div></div>
-      </div>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-        <thead><tr style={{ background: "#f1f5f9", textAlign: "left" }}>
-          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1" }}>Descripción</th>
-          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1", textAlign: "right" }}>Monto ({invoice.currency})</th>
-        </tr></thead>
-        <tbody>
-          <tr><td style={{ padding: 10, borderBottom: "1px solid #e2e8f0" }}>{invoice.documentType} · Referencia {invoice.number}</td><td style={{ padding: 10, borderBottom: "1px solid #e2e8f0", textAlign: "right" }}>{money(invoice.netAmount, invoice.currency)}</td></tr>
-          <tr><td style={{ padding: 10, borderBottom: "1px solid #e2e8f0" }}>IVA</td><td style={{ padding: 10, borderBottom: "1px solid #e2e8f0", textAlign: "right" }}>{money(invoice.vatAmount, invoice.currency)}</td></tr>
-        </tbody>
-      </table>
-      <div style={{ marginTop: 18, textAlign: "right" }}>
-        <div>Total documento: <strong>{money(invoice.totalAmount, invoice.currency)}</strong></div>
-        <div style={{ marginTop: 6, fontSize: 18 }}>Total equivalente CLP: <strong>{money(invoice.totalClp)}</strong></div>
-      </div>
-      {isTestInvoice && (
-        <div style={{ marginTop: 48, border: "1px solid #94a3b8", padding: 12, color: "#475569", fontSize: 11, textAlign: "center" }}>
-          DOCUMENTO FICTICIO PARA PRUEBAS. NO ES UN DOCUMENTO TRIBUTARIO ELECTRÓNICO Y NO HA SIDO ENVIADO NI VALIDADO POR EL SII.
-        </div>
-      )}
-    </Box>
   );
 }

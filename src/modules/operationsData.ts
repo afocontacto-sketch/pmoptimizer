@@ -208,8 +208,16 @@ export function routeLaborCost(route: RouteTemplate): number {
   return route.operations.reduce((sum, operation) => sum + operation.durationHours * operation.hourlyCost, 0);
 }
 
-export function plannedLaborCost(order: WorkOrder): number {
-  return order.projectedLaborCost ?? 0;
+// Costo de mano de obra proyectado: el guardado en la OT; si falta, horas proyectadas x tarifa
+// (la indicada o el promedio ponderado por horas de las operaciones de la ruta).
+export function plannedLaborCost(order: WorkOrder, hourlyRate?: number): number {
+  if (order.projectedLaborCost !== undefined) return order.projectedLaborCost;
+  const operations = order.routeOperations ?? [];
+  const routeHours = operations.reduce((sum, operation) => sum + operation.durationHours, 0);
+  const routeRate = routeHours > 0
+    ? operations.reduce((sum, operation) => sum + operation.durationHours * operation.hourlyCost, 0) / routeHours
+    : 0;
+  return Math.max(0, order.projectedHours) * Math.max(0, hourlyRate ?? routeRate);
 }
 
 export function plannedMaterialCost(item: OrderLine, fallbackUnitCost: number): number {

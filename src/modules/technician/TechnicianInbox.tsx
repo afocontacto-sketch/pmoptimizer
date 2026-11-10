@@ -38,7 +38,14 @@ export default function TechnicianInbox({ user, role }: { user: string; role: Ro
     }
   };
 
+  const missingRate = Boolean(employee) && env.rateOf(employee?.name ?? "") <= 0;
+
   const start = (orderId: string, operationOrder: number) => {
+    if (missingRate) {
+      setMessage("");
+      setError("No se puede iniciar la operación: tu tarifa horaria es 0 en Recursos Humanos y el costo de mano de obra quedaría sin registrar.");
+      return;
+    }
     const paused = myOpenEntry && !(myOpenEntry.orderId === orderId && myOpenEntry.operationOrder === operationOrder)
       ? ` La operación anterior (${myOpenEntry.orderId} · ${myOpenEntry.operationName}) quedó en pausa.` : "";
     report(startOperation({ orderId, operationOrder }, { user, role }, env), `Operación iniciada en ${orderId}.${paused}`);
@@ -55,6 +62,9 @@ export default function TechnicianInbox({ user, role }: { user: string; role: Ro
       {!employee && <Alert severity="warning">
         Tu usuario ({user}) no está vinculado a un empleado en Recursos Humanos, por lo que no hay órdenes asignables ni registro de horas.
         Pide al administrador que vincule el usuario al colaborador.
+      </Alert>}
+      {missingRate && <Alert severity="warning">
+        Tu empleado no tiene tarifa horaria (sueldo u horas mensuales en 0 en Recursos Humanos). No podrás iniciar operaciones hasta que se corrija.
       </Alert>}
       {myOpenEntry && <Alert severity="info">
         En curso: {myOpenEntry.orderId} · {myOpenEntry.operationName} · {durationLabel(Math.max(0, (nowMs - Date.parse(myOpenEntry.start)) / 1000))}

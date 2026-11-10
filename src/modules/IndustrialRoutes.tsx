@@ -21,6 +21,8 @@ import {
 } from "@mui/material";
 import { Add, DeleteOutlined, Save } from "@mui/icons-material";
 import { Link } from "react-router-dom";
+import { can } from "../app/permissions";
+import type { Role } from "../app/roles";
 import { routeStorageKey, sampleRoutes } from "./maintenanceData";
 import type { RouteMaterial, RouteOperation, RouteTemplate } from "./maintenanceData";
 import { getEmployeeHourlyRate, readHrEmployees } from "./HumanResourcesPage";
@@ -113,7 +115,8 @@ function money(value: number): string {
   }).format(value);
 }
 
-export default function IndustrialRoutes({ user }: { user: string }) {
+export default function IndustrialRoutes({ user, role }: { user: string; role: Role }) {
+  const canEdit = can(role, "route.edit");
   const [routes, setRoutes] = useState<RouteTemplate[]>(readRoutes);
   const [materialOptions] = useState<MaterialOption[]>(readMaterialOptions);
   const [employees] = useState(readHrEmployees);
@@ -181,6 +184,7 @@ export default function IndustrialRoutes({ user }: { user: string }) {
   };
 
   const saveRoute = (event: FormEvent<HTMLFormElement>) => {
+    if (!canEdit) return;
     event.preventDefault();
     const finalOperations = [...operations];
     if (operation.name.trim()) {
@@ -261,7 +265,7 @@ export default function IndustrialRoutes({ user }: { user: string }) {
       {message && <Alert severity="success">{message}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
 
-      <Paper component="form" onSubmit={saveRoute} sx={{ p: 3 }}>
+      {canEdit ? <Paper component="form" onSubmit={saveRoute} sx={{ p: 3 }}>
         <Stack spacing={3}>
           <Typography variant="h6">Crear hoja de ruta</Typography>
           <TextField
@@ -381,7 +385,7 @@ export default function IndustrialRoutes({ user }: { user: string }) {
             <Button type="submit" variant="contained" startIcon={<Save />}>Guardar hoja de ruta</Button>
           </Box>
         </Stack>
-      </Paper>
+      </Paper> : <Alert severity="info">Consulta de solo lectura: las hojas de ruta las mantiene Ingeniería e Industrial.</Alert>}
 
       <Paper sx={{ p: 3 }}>
         <Typography variant="h6" sx={{ mb: 2 }}>Hojas disponibles para planes y OT</Typography>

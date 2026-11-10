@@ -3,10 +3,10 @@ import { useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
-  Divider,
   Grid,
   MenuItem,
   Paper,
@@ -17,6 +17,8 @@ import {
   TableHead,
   TableRow,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from "@mui/material";
 import { Add, Download, UploadFile, Clear } from "@mui/icons-material";
@@ -37,6 +39,9 @@ import type {
   TriggerType,
 } from "./maintenanceData";
 import { readEquipmentMaster } from "./masterData";
+import { planningForecast } from "./planningForecast";
+import { can } from "../app/permissions";
+import type { Role } from "../app/roles";
 import { GanttChart } from "../components/GanttChart";
 
 type CustomFieldDefinition = {
@@ -118,7 +123,7 @@ const routeHeaders = [
   "materialCode", "materialName", "quantity", "unit", "unitCost",
 ];
 
-export default function MaintenancePlanning({ role = "Administrador" }: { role?: string }) {
+export default function MaintenancePlanning({ role = "Administrador" }: { role?: Role }) {
   const [routes, setRoutes] = useState<RouteTemplate[]>(() => readStored(routeStorageKey, sampleRoutes));
   const [plans, setPlans] = useState<MaintenancePlan[]>(() => readStored(planStorageKey, samplePlans));
   const equipmentOptions = useMemo(() => {
@@ -183,21 +188,11 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
       + operation.materials.reduce((materialsTotal, material) => materialsTotal + material.quantity * material.unitCost, 0),
     0,
   ), 0);
-  const monthlyForecast = useMemo(() => {
-    const periods = new Map<string, { calls: number; hours: number; cost: number }>();
-    for (const call of plannedCalls) {
-      const period = call.dueDate.toISOString().slice(0, 7);
-      const totals = periods.get(period) ?? { calls: 0, hours: 0, cost: 0 };
-      totals.calls += 1;
-      for (const operation of call.route.operations) {
-        totals.hours += operation.durationHours;
-        totals.cost += operation.durationHours * operation.hourlyCost;
-        totals.cost += operation.materials.reduce((sum, material) => sum + material.quantity * material.unitCost, 0);
-      }
-      periods.set(period, totals);
-    }
-    return [...periods.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [plannedCalls]);
+  const [forecastPlanIds, setForecastPlanIds] = useState<string[]>([]);
+  const [forecastMode, setForecastMode] = useState<"month" | "year">("month");
+  const [forecastYear, setForecastYear] = useState("");
+  const [forecastMonth, setForecastMonth] = useState("");
+  const monthlyForecast = useMemo(() => planningForecast(plannedCalls, { planIds: forecastPlanIds, mode: forecastMode, year: forecastYear, month: forecastMonth }), [plannedCalls, forecastPlanIds, forecastMode, forecastYear, forecastMonth]);
   const materialNeeds = useMemo(() => {
     const needs = new Map<string, {
       code: string;
@@ -680,6 +675,112 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
 
       {role !== "PM Proyecto" && (
         <>
+      <Paper sx={{ p: 3 }}>
+        <Stack spacing={3}>
+          <Typography variant="h6">Gantt Interactivo - Planificación de Órdenes</Typography>
+
+          <Stack spacing={2}>
+            <Typography variant="subtitle2">Filtros</Typography>
+            <Grid container spacing={2}>
+              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                <TextField
+                  label="Desde"
+                  type="date"
+                  value={ganttFrom}
+                  onChange={(e) => setGanttFrom(e.target.value)}
+                  slotProps={{ inputLabel: { shrink: true } }}
+                  fullWidth
+                  size="small"
+                />
+              </Grid>
+              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                <TextField
+                  label="Hasta"
+                  type="date"
+                  value={ganttTo}
+                  onChange={(e) => setGanttTo(e.target.value)}
+                  slotProps={{ inputLabel: { shrink: true } }}
+                  fullWidth
+                  size="small"
+                />
+              </Grid>
+              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                <TextField
+                  select
+                  label="Contrato"
+                  value={ganttContract}
+                  onChange={(e) => setGanttContract(e.target.value)}
+                  fullWidth
+                  size="small"
+                >
+                  <MenuItem value="">Todos</MenuItem>
+                  {availableContracts.map((contract) => (
+                    <MenuItem key={contract} value={contract}>
+                      {contract}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              </Grid>
+              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
+                <TextField
+                  select
+                  label="Año"
+                  value={ganttYear}
+                  onChange={(e) => setGanttYear(e.target.value)}
+                  fullWidth
+                  size="small"
+                >
+                  <MenuItem value="">Todos</MenuItem>
+                  {availableYears.map((year) => (
+                    <MenuItem key={year} value={year}>
+                      {year}
+                    </MenuItem>
+                  ))}
+                </TextField>
+              </Grid>
+            </Grid>
+            <Box sx={{ display: "flex", gap: 1 }}>
+              <Button
+                variant="contained"
+                onClick={() => {
+                  setGanttFrom("");
+                  setGanttTo("");
+                  setGanttContract("");
+                  setGanttYear("");
+                }}
+                startIcon={<Clear />}
+                size="small"
+              >
+                Limpiar filtros
+              </Button>
+              <Typography variant="caption" sx={{ alignSelf: "center", color: "text.secondary" }}>
+                {filteredCalls.length} órdenes mostradas
+              </Typography>
+            </Box>
+          </Stack>
+
+          <GanttChart
+            tasks={filteredCalls.map((call) => ({
+              id: call.id,
+              name: `${call.plan.equipmentId} - ${call.route.name}`,
+              startDate: call.dueDate,
+              durationHours: call.route.operations.reduce((sum, op) => sum + op.durationHours, 0),
+              contract: call.plan.contract || "Sin contrato",
+              status: workOrders.find((order) => order.plannedCallId === call.id)?.status ?? "Asignada",
+              equipment: call.plan.equipmentId,
+              technician: "Técnico asignado",
+              hours: call.route.operations.reduce((sum, op) => sum + op.durationHours, 0),
+              cost: call.route.operations.reduce(
+                (sum, op) => sum + op.durationHours * op.hourlyCost + op.materials.reduce((m, mat) => m + mat.quantity * mat.unitCost, 0),
+                0,
+              ),
+              routeName: call.route.name,
+            }))}
+            role={role}
+          />
+        </Stack>
+      </Paper>
+
       <Grid container spacing={2}>
         {[
           { label: "Llamadas proyectadas", value: String(plannedCalls.length) },
@@ -697,15 +798,35 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
       </Grid>
 
       <Paper sx={{ p: 3 }}>
-        <Typography variant="h6" sx={{ mb: 2 }}>Forecast mensual de mantenimiento</Typography>
+        <Typography variant="h6" sx={{ mb: 2 }}>Forecast de mantenimiento</Typography>
+        <Stack direction={{ xs: "column", md: "row" }} spacing={2} sx={{ mb: 2 }}>
+          <Autocomplete multiple sx={{ minWidth: 320, flex: 1 }} options={plans} value={plans.filter((plan) => forecastPlanIds.includes(plan.id))}
+            getOptionLabel={(plan) => `${plan.id} · ${plan.name}`} isOptionEqualToValue={(a, b) => a.id === b.id}
+            onChange={(_, value) => setForecastPlanIds(value.map((plan) => plan.id))}
+            renderInput={(params) => <TextField {...params} label="Planes (vacío = todos)" />} />
+          <ToggleButtonGroup exclusive size="small" value={forecastMode} onChange={(_, value: "month" | "year" | null) => value && setForecastMode(value)}>
+            <ToggleButton value="month">Mensual</ToggleButton>
+            <ToggleButton value="year">Anual</ToggleButton>
+          </ToggleButtonGroup>
+          <TextField select size="small" label="Año" value={forecastYear} onChange={(event) => setForecastYear(event.target.value)} sx={{ minWidth: 110 }}>
+            <MenuItem value="">Todos</MenuItem>
+            {availableYears.map((year) => <MenuItem key={year} value={year}>{year}</MenuItem>)}
+          </TextField>
+          {forecastMode === "month" && (
+            <TextField select size="small" label="Mes" value={forecastMonth} onChange={(event) => setForecastMonth(event.target.value)} sx={{ minWidth: 110 }}>
+              <MenuItem value="">Todos</MenuItem>
+              {["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12"].map((month) => <MenuItem key={month} value={month}>{month}</MenuItem>)}
+            </TextField>
+          )}
+        </Stack>
         {monthlyForecast.length === 0 ? (
           <Typography color="text.secondary">No hay costos proyectados para este horizonte.</Typography>
         ) : (
           <Table size="small">
             <TableHead><TableRow><TableCell>Período</TableCell><TableCell align="right">Llamadas</TableCell><TableCell align="right">Horas estimadas</TableCell><TableCell align="right">Costo estimado</TableCell></TableRow></TableHead>
-            <TableBody>{monthlyForecast.map(([period, totals]) => (
-              <TableRow key={period}>
-                <TableCell>{new Intl.DateTimeFormat("es-CL", { month: "long", year: "numeric" }).format(new Date(`${period}-15T12:00:00`))}</TableCell>
+            <TableBody>{monthlyForecast.map((totals) => (
+              <TableRow key={totals.period}>
+                <TableCell>{forecastMode === "year" ? totals.period : new Intl.DateTimeFormat("es-CL", { month: "long", year: "numeric" }).format(new Date(`${totals.period}-15T12:00:00`))}</TableCell>
                 <TableCell align="right">{totals.calls}</TableCell>
                 <TableCell align="right">{totals.hours.toFixed(1)} h</TableCell>
                 <TableCell align="right">{formatClp(totals.cost)}</TableCell>
@@ -715,6 +836,48 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
         )}
       </Paper>
 
+      <Paper sx={{ p: 3 }}>
+        <Typography variant="h6" sx={{ mb: 2 }}>Planes por equipo</Typography>
+        {plans.length === 0 ? (
+          <Typography color="text.secondary">Aún no hay planes. Crea uno o importa una plantilla.</Typography>
+        ) : (
+          <Table size="small">
+            <TableHead><TableRow>
+              <TableCell>Plan / equipo</TableCell><TableCell>Disparador</TableCell><TableCell>Contrato / WBS</TableCell><TableCell>Hoja de ruta</TableCell><TableCell align="right">Llamadas</TableCell><TableCell />
+            </TableRow></TableHead>
+            <TableBody>{plans.map((plan) => {
+              const route = routeById.get(plan.routeId);
+              const calls = route ? generateCalls(plan, route) : [];
+              const trigger = plan.triggerType === "calendar"
+                ? `Cada ${plan.calendarInterval} ${plan.calendarUnit}`
+                : plan.triggerType === "first"
+                  ? `Primero: ${plan.calendarInterval} ${plan.calendarUnit} o ${plan.meterInterval} ${plan.meterUnit === "hours" ? "h" : "km"}`
+                  : `Cada ${plan.meterInterval} ${plan.meterUnit === "hours" ? "h" : "km"}`;
+              return (
+                <TableRow key={plan.id}>
+                  <TableCell>
+                    <Typography sx={{ fontWeight: 700 }}>{plan.name}</Typography>
+                    <Typography variant="caption" color="text.secondary">{plan.equipmentId}</Typography>
+                    {customFieldDefinitions.filter((field) => plan.customFields?.[field.key]).map((field) => (
+                      <Typography key={field.key} sx={{ display: "block" }} variant="caption" color="text.secondary">
+                        {field.label}: {plan.customFields?.[field.key]}
+                      </Typography>
+                    ))}
+                  </TableCell>
+                  <TableCell>{trigger}</TableCell>
+                  <TableCell>{plan.contract || "—"}<Typography sx={{ display: "block" }} variant="caption" color="text.secondary">{plan.wbs || "Sin WBS"}</Typography></TableCell>
+                  <TableCell>{route?.name ?? plan.routeId}</TableCell>
+                  <TableCell align="right"><Chip size="small" label={calls.length} color="primary" /></TableCell>
+                  <TableCell>{can(role, "plan.edit") && <Button size="small" color="error" onClick={() => savePlans(plans.filter((item) => item.id !== plan.id))}>Eliminar</Button>}</TableCell>
+                </TableRow>
+              );
+            })}</TableBody>
+          </Table>
+        )}
+      </Paper>
+
+      {can(role, "plan.edit") && (
+      <>
       <Paper sx={{ p: 3 }}>
         <Stack spacing={2}>
           <Typography variant="h6">Crear plan y asociar hoja de ruta</Typography>
@@ -893,230 +1056,8 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
           Las cargas masivas CSV están habilitadas solo para el Administrador. Los archivos cargan planes u hojas de ruta según su plantilla.
         </Alert>
       </Paper>
-
-      <Paper sx={{ p: 3 }}>
-        <Typography variant="h6" sx={{ mb: 2 }}>Planes por equipo</Typography>
-        {plans.length === 0 ? (
-          <Typography color="text.secondary">Aún no hay planes. Crea uno o importa una plantilla.</Typography>
-        ) : (
-          <Table size="small">
-            <TableHead><TableRow>
-              <TableCell>Plan / equipo</TableCell><TableCell>Disparador</TableCell><TableCell>Contrato / WBS</TableCell><TableCell>Hoja de ruta</TableCell><TableCell align="right">Llamadas</TableCell><TableCell />
-            </TableRow></TableHead>
-            <TableBody>{plans.map((plan) => {
-              const route = routeById.get(plan.routeId);
-              const calls = route ? generateCalls(plan, route) : [];
-              const trigger = plan.triggerType === "calendar"
-                ? `Cada ${plan.calendarInterval} ${plan.calendarUnit}`
-                : plan.triggerType === "first"
-                  ? `Primero: ${plan.calendarInterval} ${plan.calendarUnit} o ${plan.meterInterval} ${plan.meterUnit === "hours" ? "h" : "km"}`
-                  : `Cada ${plan.meterInterval} ${plan.meterUnit === "hours" ? "h" : "km"}`;
-              return (
-                <TableRow key={plan.id}>
-                  <TableCell>
-                    <Typography sx={{ fontWeight: 700 }}>{plan.name}</Typography>
-                    <Typography variant="caption" color="text.secondary">{plan.equipmentId}</Typography>
-                    {customFieldDefinitions.filter((field) => plan.customFields?.[field.key]).map((field) => (
-                      <Typography key={field.key} sx={{ display: "block" }} variant="caption" color="text.secondary">
-                        {field.label}: {plan.customFields?.[field.key]}
-                      </Typography>
-                    ))}
-                  </TableCell>
-                  <TableCell>{trigger}</TableCell>
-                  <TableCell>{plan.contract || "—"}<Typography sx={{ display: "block" }} variant="caption" color="text.secondary">{plan.wbs || "Sin WBS"}</Typography></TableCell>
-                  <TableCell>{route?.name ?? plan.routeId}</TableCell>
-                  <TableCell align="right"><Chip size="small" label={calls.length} color="primary" /></TableCell>
-                  <TableCell><Button size="small" color="error" onClick={() => savePlans(plans.filter((item) => item.id !== plan.id))}>Eliminar</Button></TableCell>
-                </TableRow>
-              );
-            })}</TableBody>
-          </Table>
-        )}
-      </Paper>
-
-      <Grid container spacing={2}>
-        <Grid size={{ xs: 12, lg: 7 }}>
-          <Paper sx={{ p: 3, height: "100%" }}>
-            <Typography variant="h6" sx={{ mb: 2 }}>Llamadas futuras · demanda de Supply</Typography>
-            {plannedCalls.length === 0 ? (
-              <Typography color="text.secondary">No hay llamadas en el horizonte seleccionado.</Typography>
-            ) : (
-              <Table size="small">
-                <TableHead><TableRow><TableCell>Fecha</TableCell><TableCell>Equipo / contrato</TableCell><TableCell>Plan / WBS</TableCell><TableCell>Horas</TableCell></TableRow></TableHead>
-                <TableBody>{plannedCalls.slice(0, 50).map((call) => (
-                  <TableRow key={call.id}>
-                    <TableCell>{formatDate(call.dueDate)}</TableCell>
-                    <TableCell>{call.plan.equipmentId}<Typography sx={{ display: "block" }} variant="caption" color="text.secondary">{call.plan.contract || "Sin contrato"}</Typography></TableCell>
-                    <TableCell>{call.plan.name}<Typography sx={{ display: "block" }} variant="caption" color="text.secondary">{call.plan.wbs || "Sin WBS"}</Typography></TableCell>
-                    <TableCell>{call.route.operations.reduce((sum, operation) => sum + operation.durationHours, 0).toFixed(1)} h</TableCell>
-                  </TableRow>
-                ))}</TableBody>
-              </Table>
-            )}
-            {plannedCalls.length > 50 && <Typography variant="caption">Se muestran las primeras 50 de {plannedCalls.length} llamadas.</Typography>}
-          </Paper>
-        </Grid>
-        <Grid size={{ xs: 12, lg: 5 }}>
-          <Paper sx={{ p: 3, height: "100%" }}>
-            <Typography variant="h6" sx={{ mb: 2 }}>Demanda de materiales de llamadas</Typography>
-            {materialNeeds.length === 0 ? (
-              <Typography color="text.secondary">Sin necesidades proyectadas.</Typography>
-            ) : (
-              <Table size="small">
-                <TableHead><TableRow><TableCell>Material</TableCell><TableCell align="right">Cantidad requerida</TableCell><TableCell>Fecha de necesidad</TableCell></TableRow></TableHead>
-                <TableBody>{materialNeeds.map((item) => (
-                  <TableRow key={`${item.code}-${item.date}`}>
-                    <TableCell>{item.name}<Typography sx={{ display: "block" }} variant="caption" color="text.secondary">{item.code}</Typography></TableCell>
-                    <TableCell align="right">{item.quantity} {item.unit}</TableCell>
-                    <TableCell>{formatDate(new Date(`${item.date}T12:00:00`))}</TableCell>
-                  </TableRow>
-                ))}</TableBody>
-              </Table>
-            )}
-            <Divider sx={{ my: 2 }} />
-            <Typography variant="body2">Forecast de referencia (materiales + horas): <strong>{formatClp(projectedCost)}</strong></Typography>
-            <Typography variant="caption" color="text.secondary">Supply calcula stock disponible por fecha. El costo real del material se confirma al consumirlo en la OT.</Typography>
-          </Paper>
-        </Grid>
-      </Grid>
-
-      <Divider sx={{ my: 3 }} />
-
-      <Paper sx={{ p: 3 }}>
-        <Stack spacing={3}>
-          <Typography variant="h6">Gantt Interactivo - Planificación de Órdenes</Typography>
-
-          <Stack spacing={2}>
-            <Typography variant="subtitle2">Filtros</Typography>
-            <Grid container spacing={2}>
-              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                <TextField
-                  label="Desde"
-                  type="date"
-                  value={ganttFrom}
-                  onChange={(e) => setGanttFrom(e.target.value)}
-                  slotProps={{ inputLabel: { shrink: true } }}
-                  fullWidth
-                  size="small"
-                />
-              </Grid>
-              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                <TextField
-                  label="Hasta"
-                  type="date"
-                  value={ganttTo}
-                  onChange={(e) => setGanttTo(e.target.value)}
-                  slotProps={{ inputLabel: { shrink: true } }}
-                  fullWidth
-                  size="small"
-                />
-              </Grid>
-              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                <TextField
-                  select
-                  label="Contrato"
-                  value={ganttContract}
-                  onChange={(e) => setGanttContract(e.target.value)}
-                  fullWidth
-                  size="small"
-                >
-                  <MenuItem value="">Todos</MenuItem>
-                  {availableContracts.map((contract) => (
-                    <MenuItem key={contract} value={contract}>
-                      {contract}
-                    </MenuItem>
-                  ))}
-                </TextField>
-              </Grid>
-              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                <TextField
-                  select
-                  label="Año"
-                  value={ganttYear}
-                  onChange={(e) => setGanttYear(e.target.value)}
-                  fullWidth
-                  size="small"
-                >
-                  <MenuItem value="">Todos</MenuItem>
-                  {availableYears.map((year) => (
-                    <MenuItem key={year} value={year}>
-                      {year}
-                    </MenuItem>
-                  ))}
-                </TextField>
-              </Grid>
-            </Grid>
-            <Box sx={{ display: "flex", gap: 1 }}>
-              <Button
-                variant="contained"
-                onClick={() => {
-                  setGanttFrom("");
-                  setGanttTo("");
-                  setGanttContract("");
-                  setGanttYear("");
-                }}
-                startIcon={<Clear />}
-                size="small"
-              >
-                Limpiar filtros
-              </Button>
-              <Typography variant="caption" sx={{ alignSelf: "center", color: "text.secondary" }}>
-                {filteredCalls.length} órdenes mostradas
-              </Typography>
-            </Box>
-          </Stack>
-
-          <GanttChart
-            tasks={filteredCalls.map((call) => ({
-              id: call.id,
-              name: `${call.plan.equipmentId} - ${call.route.name}`,
-              startDate: call.dueDate,
-              durationHours: call.route.operations.reduce((sum, op) => sum + op.durationHours, 0),
-              contract: call.plan.contract || "Sin contrato",
-              status: workOrders.find((order) => order.plannedCallId === call.id)?.status ?? "Asignada",
-              equipment: call.plan.equipmentId,
-              technician: "Técnico asignado",
-              hours: call.route.operations.reduce((sum, op) => sum + op.durationHours, 0),
-              cost: call.route.operations.reduce(
-                (sum, op) => sum + op.durationHours * op.hourlyCost + op.materials.reduce((m, mat) => m + mat.quantity * mat.unitCost, 0),
-                0,
-              ),
-              routeName: call.route.name,
-            }))}
-            role={role}
-          />
-
-          {role === "PM Proyecto" && (
-            <Stack spacing={2}>
-              <Typography variant="subtitle2">Resumen por Contrato</Typography>
-              {pmGanttTotals.length > 0 ? (
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Contrato</TableCell>
-                      <TableCell align="right">Órdenes</TableCell>
-                      <TableCell align="right">Horas</TableCell>
-                      <TableCell align="right">Presupuesto (CLP)</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {pmAnnualTotals.map((row) => (
-                      <TableRow key={`${row.contract}-${row.year}`}>
-                        <TableCell>{row.contract} ({row.year})</TableCell>
-                        <TableCell align="right">{row.calls}</TableCell>
-                        <TableCell align="right">{row.hours.toFixed(1)}</TableCell>
-                        <TableCell align="right">{formatClp(row.cost)}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              ) : (
-                <Typography color="text.secondary">Sin datos para mostrar</Typography>
-              )}
-            </Stack>
-          )}
-        </Stack>
-      </Paper>
+      </>
+      )}
 
       <Paper sx={{ p: 3 }}>
         <Typography variant="h6" sx={{ mb: 2 }}>Hojas de ruta disponibles</Typography>

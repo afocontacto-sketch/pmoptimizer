@@ -1,7 +1,11 @@
 import { keys } from "../data/keys";
+import { can } from "../app/permissions";
+import type { Role } from "../app/roles";
+import { validateContractDates, wbsSuffixes } from "../data/contracts";
 import { useEffect, useState } from "react";
 import type { ChangeEvent } from "react";
 import {
+  Alert,
   Box,
   Button,
   Chip,
@@ -35,7 +39,7 @@ export const contractFilesStorageKey = keys.contractFiles;
 export type WbsElement = {
   id: string;
   code: string;
-  type: "PRE" | "OVH" | "COR" | "REP" | "ESPERA";
+  type: "PRE" | "OVH" | "COR" | "GAR" | "REP" | "IND" | "ESPERA";
   description: string;
 };
 
@@ -79,7 +83,7 @@ type ContractFile = {
 };
 
 const sectors = ["Retail", "Minería", "Manufactura", "Servicios", "Transporte", "Construcción", "Tecnología"];
-const wbsTypes = ["PRE", "OVH", "COR", "REP", "ESPERA"];
+const wbsTypes: readonly string[] = wbsSuffixes;
 
 function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -112,7 +116,9 @@ function saveContractFiles(files: Map<string, ContractFile>): void {
   localStorage.setItem(contractFilesStorageKey, JSON.stringify(Array.from(files.values())));
 }
 
-export default function ClientsPage() {
+export default function ClientsPage({ role }: { role: Role }) {
+  const canEdit = can(role, "client.edit");
+  const [contractError, setContractError] = useState("");
   const [clients, setClients] = useState<Client[]>([]);
   const [openDialog, setOpenDialog] = useState(false);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
@@ -193,6 +199,7 @@ export default function ClientsPage() {
 
   const handleAddContract = (clientId: string) => {
     setSelectedClientForContract(clientId);
+    setContractError("");
     setNewContract({
       wbs: [
         { id: generateId("WBS"), code: "PRE-001", type: "PRE", description: "Mantenimiento Preventivo" },
@@ -207,14 +214,21 @@ export default function ClientsPage() {
       alert("Por favor completa nombre, código y presupuesto");
       return;
     }
+    if (!canEdit) return;
+    const dateError = validateContractDates(newContract.startDate, newContract.endDate);
+    if (dateError) {
+      setContractError(dateError);
+      return;
+    }
+    setContractError("");
 
     const contract: Contract = {
       id: generateId("CTR"),
       code: newContract.code || "",
       name: newContract.name || "",
       clientId: selectedClientForContract,
-      startDate: newContract.startDate || new Date().toISOString().split("T")[0],
-      endDate: newContract.endDate || "",
+      startDate: newContract.startDate ?? "",
+      endDate: newContract.endDate ?? "",
       budget: newContract.budget || 0,
       wbs: newContract.wbs || [],
       createdAt: new Date().toISOString(),
@@ -285,9 +299,11 @@ export default function ClientsPage() {
     <Box sx={{ p: 3 }}>
       <Stack direction="row" sx={{ justifyContent: "space-between", alignItems: "center", mb: 3 }}>
         <Typography variant="h4">Gestión de Clientes</Typography>
-        <Button variant="contained" startIcon={<Add />} onClick={handleNewClient}>
-          Nuevo Cliente
-        </Button>
+        {canEdit && (
+          <Button variant="contained" startIcon={<Add />} onClick={handleNewClient}>
+            Nuevo Cliente
+          </Button>
+        )}
       </Stack>
 
       <Stack direction="column" spacing={2}>
@@ -314,14 +330,16 @@ export default function ClientsPage() {
                   />
                 </Stack>
               </Box>
-              <Stack direction="row" spacing={1}>
-                <IconButton size="small" onClick={() => handleEditClient(client)}>
-                  <EditIcon />
-                </IconButton>
-                <IconButton size="small" color="error" onClick={() => handleDeleteClient(client.id)}>
-                  <DeleteIcon />
-                </IconButton>
-              </Stack>
+              {canEdit && (
+                <Stack direction="row" spacing={1}>
+                  <IconButton size="small" onClick={() => handleEditClient(client)}>
+                    <EditIcon />
+                  </IconButton>
+                  <IconButton size="small" color="error" onClick={() => handleDeleteClient(client.id)}>
+                    <DeleteIcon />
+                  </IconButton>
+                </Stack>
+              )}
             </Stack>
 
             {client.contact && (
@@ -370,15 +388,17 @@ export default function ClientsPage() {
                   </Typography>
                 )}
 
-                <Button
-                  size="small"
-                  variant="outlined"
-                  startIcon={<Add />}
-                  onClick={() => handleAddContract(client.id)}
-                  sx={{ mr: 1 }}
-                >
-                  Agregar Contrato
-                </Button>
+                {canEdit && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<Add />}
+                    onClick={() => handleAddContract(client.id)}
+                    sx={{ mr: 1 }}
+                  >
+                    Agregar Contrato
+                  </Button>
+                )}
 
                 <Divider sx={{ my: 2 }} />
 
@@ -522,6 +542,7 @@ export default function ClientsPage() {
         <DialogTitle>Nuevo Contrato</DialogTitle>
         <DialogContent sx={{ pt: 2 }}>
           <Stack spacing={2}>
+            {contractError && <Alert severity="error">{contractError}</Alert>}
             <TextField
               label="Código de Contrato"
               value={newContract.code || ""}
@@ -537,6 +558,7 @@ export default function ClientsPage() {
             />
             <TextField
               label="Fecha Inicio"
+              required
               value={newContract.startDate || ""}
               onChange={(e) => setNewContract({ ...newContract, startDate: e.target.value })}
               fullWidth
@@ -544,6 +566,7 @@ export default function ClientsPage() {
             />
             <TextField
               label="Fecha Fin"
+              required
               value={newContract.endDate || ""}
               onChange={(e) => setNewContract({ ...newContract, endDate: e.target.value })}
               fullWidth

@@ -1,11 +1,15 @@
 import { can } from "../app/permissions";
 import type { Role } from "../app/roles";
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { nextDocNumber } from "../data/docNumbering";
+import { keys } from "../data/keys";
+import { printDocument } from "../components/print/printDocument";
+import { purchaseOrderDoc } from "../components/print/templates/purchaseOrderDoc";
+import { quoteComparisonDoc } from "../components/print/templates/quoteComparisonDoc";
+import { readPlannedCalls } from "./maintenanceData";
 import type { FormEvent } from "react";
 import {
   Alert,
-  Box,
   Button,
   Chip,
   Dialog,
@@ -31,6 +35,7 @@ import {
   readStoredList,
   suppliersStorageKey,
   quotationsStorageKey,
+  requestCostAssignment,
 } from "./supplyData";
 import type { PurchaseOrder, PurchaseQuote, PurchaseRequest, SupplierMaster, AwardHistory } from "./supplyData";
 
@@ -63,12 +68,21 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
   const [supplierName, setSupplierName] = useState("");
   const [drafts, setDrafts] = useState<Record<string, QuoteDraft[]>>({});
   const [selectedQuotes, setSelectedQuotes] = useState<Record<string, string>>({});
-  const [printOrder, setPrintOrder] = useState<PurchaseOrder | null>(null);
+  const [manualWbs, setManualWbs] = useState<Record<string, string>>({});
+  const plannedCalls = useMemo(() => readPlannedCalls(), []);
+  const wbsChoices = useMemo(() => readStoredList<{ contractCode?: string; wbs?: string[] }>(keys.clients)
+    .flatMap((client) => client.contractCode ? (client.wbs ?? []).map((wbs) => ({ contract: client.contractCode as string, wbs })) : []), []);
   const [comparatorModal, setComparatorModal] = useState<PurchaseRequest | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const canApprove = can(role, "purchase.approve");
   const canQuote = can(role, "purchase.quote");
+  // El PM solo aprueba; Contabilidad y otros roles solo consultan.
+  const approvalOnly = canApprove && !canQuote;
+  const assignmentOf = (request: PurchaseRequest) => {
+    const manual = manualWbs[request.id]?.split("|");
+    return requestCostAssignment(request, plannedCalls) ?? (manual?.[1] ? { contract: manual[0], wbs: manual[1] } : null);
+  };
 
   const addSupplier = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -90,14 +104,11 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
     }
   };
 
-  useEffect(() => {
-    if (!printOrder) return;
-    const timer = window.setTimeout(() => {
-      window.print();
-      setPrintOrder(null);
-    }, 100);
-    return () => window.clearTimeout(timer);
-  }, [printOrder]);
+  const printDoc = (template: ReturnType<typeof purchaseOrderDoc>) => {
+    printDocument({ ...template, user }).catch((printError: unknown) => {
+      setError(printError instanceof Error ? printError.message : "No se pudo imprimir el documento.");
+    });
+  };
 
   const updateData = (nextRequests: PurchaseRequest[], nextOrders: PurchaseOrder[], nextAwardHistory?: AwardHistory[]) => {
     try {
@@ -123,6 +134,16 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
       setError(`Selecciona una cotización para ${request.id}.`);
       return;
     }
+    if (!canQuote) {
+      setError("Solo Compras puede emitir órdenes de compra.");
+      return;
+    }
+    const assignment = assignmentOf(request);
+    if (!assignment) {
+      setComparatorModal(null);
+      setError(`Selecciona el contrato/WBS de ${request.id} antes de emitir la OC.`);
+      return;
+    }
 
     let orderId: string;
     try {
@@ -142,6 +163,9 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
       supplier: quote.supplier,
       unitCost: quote.unitCost,
       expectedDate: quote.expectedDate,
+      contract: assignment.contract,
+      wbs: assignment.wbs,
+      createdBy: user,
       selectedQuoteId: quote.id,
       winningQuoteId: quote.id,
       status: "Pendiente aprobación",
@@ -155,6 +179,8 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
           supplier: order.supplier,
           quotedUnitCost: quote.unitCost,
           purchaseOrderId: orderId,
+          contract: assignment.contract,
+          wbs: assignment.wbs,
           expectedDate: quote.expectedDate,
           status: "OC pendiente aprobación" as const,
           quotes: item.quotes?.map((q) => ({
@@ -189,6 +215,10 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
   };
 
   const approveOrder = (order: PurchaseOrder, approve: boolean) => {
+    if (!canApprove) {
+      setError("Solo el PM del proyecto puede aprobar órdenes de compra.");
+      return;
+    }
     const nextOrders = orders.map((item) => item.id === order.id
       ? { ...item, status: approve ? "Aprobada" as const : "Rechazada" as const, approvedBy: user }
       : item);
@@ -201,6 +231,7 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
   };
 
   const startQuote = (request: PurchaseRequest) => {
+    if (!canQuote) return;
     setDrafts((current) => ({ ...current, [request.id]: Array.from({ length: 3 }, () => emptyQuote(request.needDate)) }));
     const next = requests.map((item) => item.id === request.id
       ? { ...item, status: "Cotización en curso" as const }
@@ -241,6 +272,29 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
       </div>
       {message && <Alert severity="success">{message}</Alert>}
       {error && <Alert severity="error">{error}</Alert>}
+      {approvalOnly && (
+        <Paper sx={{ p: 3 }}>
+          <Typography variant="h6" sx={{ mb: 2 }}>Órdenes pendientes de aprobación</Typography>
+          {orders.filter((order) => order.status === "Pendiente aprobación").length === 0
+            ? <Typography color="text.secondary">No hay órdenes de compra pendientes de aprobación.</Typography> : (
+              <Table size="small">
+                <TableHead><TableRow><TableCell>OC</TableCell><TableCell>Proveedor</TableCell><TableCell>Material</TableCell><TableCell align="right">Total</TableCell><TableCell>Contrato / WBS</TableCell><TableCell>Acciones</TableCell></TableRow></TableHead>
+                <TableBody>{orders.filter((order) => order.status === "Pendiente aprobación").map((order) => (
+                  <TableRow key={order.id}>
+                    <TableCell>{order.id}</TableCell><TableCell>{order.supplier}</TableCell>
+                    <TableCell>{order.materialCode} · {order.materialName}</TableCell>
+                    <TableCell align="right">{money(order.quantity * order.unitCost)}</TableCell>
+                    <TableCell>{order.contract ?? "—"}<Typography variant="caption" sx={{ display: "block" }}>{order.wbs ?? "Sin WBS"}</Typography></TableCell>
+                    <TableCell><Stack direction="row" spacing={1}>
+                      <Button size="small" color="success" startIcon={<CheckCircleOutlined />} onClick={() => approveOrder(order, true)}>Aprobar</Button>
+                      <Button size="small" color="error" onClick={() => approveOrder(order, false)}>Rechazar</Button>
+                    </Stack></TableCell>
+                  </TableRow>
+                ))}</TableBody>
+              </Table>
+            )}
+        </Paper>
+      )}
       {canQuote && (
         <Paper component="form" onSubmit={addSupplier} sx={{ p: 2 }}>
           <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ alignItems: { sm: "center" } }}>
@@ -253,7 +307,7 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
           </Typography>
         </Paper>
       )}
-      <Paper sx={{ p: 3 }}>
+      {!approvalOnly && <Paper sx={{ p: 3 }}>
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 2 }}>
           <ShoppingCart color="primary" />
           <Typography variant="h6">Solicitudes de pedido</Typography>
@@ -288,6 +342,11 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
                           {quote.id === (selectedQuotes[request.id] ?? cheapestQuoteId) && <Chip size="small" sx={{ ml: 1 }} color="success" label="Seleccionada" />}
                           </Typography>
                         ))}
+                        {!requestCostAssignment(request, plannedCalls) && (
+                          <TextField select size="small" label="Contrato · WBS (obligatorio)" value={manualWbs[request.id] ?? ""} onChange={(event) => setManualWbs((current) => ({ ...current, [request.id]: event.target.value }))}>
+                            {wbsChoices.map((choice) => <MenuItem key={`${choice.contract}|${choice.wbs}`} value={`${choice.contract}|${choice.wbs}`}>{choice.contract} · {choice.wbs}</MenuItem>)}
+                          </TextField>
+                        )}
                         <TextField select size="small" label="Oferta adjudicada" value={selectedQuotes[request.id] ?? cheapestQuoteId} onChange={(event) => setSelectedQuotes((current) => ({ ...current, [request.id]: event.target.value }))}>
                           {request.quotes.map((quote) => <MenuItem key={quote.id} value={quote.id}>{quote.supplier} · {money(quote.unitCost)}</MenuItem>)}
                         </TextField>
@@ -341,7 +400,7 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
             })}</TableBody>
           </Table>
         )}
-      </Paper>
+      </Paper>}
       <Paper sx={{ p: 3 }}>
         <Typography variant="h6" sx={{ mb: 2 }}>Órdenes de compra</Typography>
         {orders.length === 0 ? <Typography color="text.secondary">Las OC cotizadas aparecerán aquí.</Typography> : (
@@ -353,71 +412,15 @@ export default function PurchasingPage({ role, user }: { role: Role; user: strin
                 <TableCell>{order.materialCode} · {order.materialName}</TableCell>
                 <TableCell align="right">{money(order.quantity * order.unitCost)}</TableCell>
                 <TableCell>{order.expectedDate}</TableCell>
-                <TableCell>{order.status}{order.approvedBy ? ` · ${order.approvedBy}` : ""}</TableCell>
-                <TableCell><Button size="small" startIcon={<Print />} onClick={() => setPrintOrder(order)}>Imprimir</Button></TableCell>
+                <TableCell>{order.status}{order.approvedBy ? ` · ${order.approvedBy}` : ""}<Typography variant="caption" sx={{ display: "block" }}>{order.wbs ?? ""}</Typography></TableCell>
+                <TableCell><Button size="small" startIcon={<Print />} onClick={() => printDoc(purchaseOrderDoc(order))}>Imprimir</Button></TableCell>
               </TableRow>
             ))}</TableBody>
           </Table>
         )}
       </Paper>
-      {printOrder && <PurchaseOrderPrint order={printOrder} />}
-      {comparatorModal && <QuotationComparator request={comparatorModal} onClose={() => setComparatorModal(null)} onAward={awardQuote} awardHistory={awardHistory} />}
+      {comparatorModal && <QuotationComparator request={comparatorModal} onClose={() => setComparatorModal(null)} onAward={awardQuote} onPrint={() => printDoc(quoteComparisonDoc(comparatorModal))} awardHistory={awardHistory} />}
     </Stack>
-  );
-}
-
-function PurchaseOrderPrint({ order }: { order: PurchaseOrder }) {
-  const total = order.quantity * order.unitCost;
-  return (
-    <Box className="document-print-area">
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "2px solid #166534", paddingBottom: 16 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <img
-            src="/PMO.jfif"
-            alt=""
-            onError={(event) => { event.currentTarget.style.display = "none"; }}
-            style={{ maxWidth: 64, maxHeight: 54, objectFit: "contain" }}
-          />
-          <strong style={{ fontSize: 20, letterSpacing: 1 }}>PMOPTIMIZER</strong>
-        </div>
-        <div style={{ textAlign: "right" }}>
-          <div style={{ color: "#166534", fontSize: 12, fontWeight: 700, letterSpacing: 1 }}>ORDEN DE COMPRA</div>
-          <div style={{ fontSize: 22, fontWeight: 700 }}>{order.id}</div>
-        </div>
-      </header>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24, margin: "28px 0" }}>
-        <div><small style={{ color: "#64748b" }}>PROVEEDOR</small><div style={{ fontSize: 16, fontWeight: 600 }}>{order.supplier}</div></div>
-        <div><small style={{ color: "#64748b" }}>FECHA DE EMISIÓN</small><div>{new Date().toLocaleDateString("es-CL")}</div></div>
-        <div><small style={{ color: "#64748b" }}>SOLICITUD DE PEDIDO</small><div>{order.requestId}</div></div>
-        <div><small style={{ color: "#64748b" }}>FECHA DE ENTREGA ESTIMADA</small><div>{order.expectedDate}</div></div>
-      </div>
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-        <thead><tr style={{ background: "#f1f5f9", textAlign: "left" }}>
-          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1" }}>Código</th>
-          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1" }}>Descripción</th>
-          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1", textAlign: "right" }}>Cantidad</th>
-          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1" }}>Unidad</th>
-          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1", textAlign: "right" }}>Precio unitario</th>
-          <th style={{ padding: 10, borderBottom: "1px solid #cbd5e1", textAlign: "right" }}>Total</th>
-        </tr></thead>
-        <tbody><tr>
-          <td style={{ padding: 10, borderBottom: "1px solid #e2e8f0" }}>{order.materialCode}</td>
-          <td style={{ padding: 10, borderBottom: "1px solid #e2e8f0" }}>{order.materialName}</td>
-          <td style={{ padding: 10, borderBottom: "1px solid #e2e8f0", textAlign: "right" }}>{order.quantity}</td>
-          <td style={{ padding: 10, borderBottom: "1px solid #e2e8f0" }}>{order.unit}</td>
-          <td style={{ padding: 10, borderBottom: "1px solid #e2e8f0", textAlign: "right" }}>{money(order.unitCost)}</td>
-          <td style={{ padding: 10, borderBottom: "1px solid #e2e8f0", textAlign: "right" }}>{money(total)}</td>
-        </tr></tbody>
-      </table>
-      <div style={{ marginTop: 18, textAlign: "right", fontSize: 18, fontWeight: 700 }}>Total: {money(total)}</div>
-      <div style={{ marginTop: 52, borderTop: "1px solid #cbd5e1", paddingTop: 14, color: "#475569", fontSize: 11 }}>
-        Estado: {order.status}{order.approvedBy ? ` · Aprobada por ${order.approvedBy}` : ""}. Documento interno de prueba; no constituye un documento tributario.
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 80, marginTop: 72, textAlign: "center", fontSize: 11 }}>
-        <div style={{ borderTop: "1px solid #64748b", paddingTop: 8 }}>Solicitado por</div>
-        <div style={{ borderTop: "1px solid #64748b", paddingTop: 8 }}>Aprobación</div>
-      </div>
-    </Box>
   );
 }
 
@@ -425,9 +428,11 @@ function QuotationComparator({
   request,
   onClose,
   onAward,
+  onPrint,
   awardHistory,
 }: {
   request: PurchaseRequest;
+  onPrint: () => void;
   onClose: () => void;
   onAward: (request: PurchaseRequest, quote: PurchaseQuote) => void;
   awardHistory: AwardHistory[];
@@ -587,6 +592,7 @@ function QuotationComparator({
         </Stack>
       </DialogContent>
       <DialogActions>
+        <Button startIcon={<Print />} onClick={onPrint}>Imprimir / Guardar PDF</Button>
         <Button onClick={onClose}>Cerrar</Button>
       </DialogActions>
     </Dialog>

@@ -1,4 +1,5 @@
-import { backupFilePrefix, backupFormat, keys, KEY_PREFIX, SCHEMA } from "./data/keys";
+import { getAppDataBackup, parseBackup, resetDemoData, restoreBackup } from "./data/backup";
+import { backupFilePrefix } from "./data/keys";
 import { Fragment, useEffect, useState } from "react";
 import type { ChangeEvent, FormEvent, ReactNode } from "react";
 import {
@@ -24,11 +25,6 @@ import {
   MenuItem,
   Paper,
   Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
   TextField,
   ThemeProvider,
   Toolbar,
@@ -55,7 +51,9 @@ import {
   useNavigate,
 } from "react-router-dom";
 import MaintenancePlanning from "./modules/MaintenancePlanning";
-import IndustrialRoutes from "./modules/IndustrialRoutes";
+import EngineeringPage from "./modules/EngineeringPage";
+import MaterialsMaster from "./modules/materials/MaterialsMaster";
+import { getMaterialRows, isCritical } from "./modules/materials/materialRows";
 import TechnicianInbox from "./modules/technician/TechnicianInbox";
 import WarehousePage from "./modules/warehouse/WarehousePage";
 import SupplyPage from "./modules/SupplyPage";
@@ -66,10 +64,8 @@ import HumanResourcesPage from "./modules/HumanResourcesPage";
 import ClientsPage from "./modules/ClientsPage";
 import QualityPage from "./modules/quality/QualityPage";
 import ProductionPage from "./modules/production/ProductionPage";
-import { equipmentStorageKey, readEquipmentMaster } from "./modules/masterData";
-import type { EquipmentMaster } from "./modules/masterData";
 import { BrandLogo } from "./components/BrandLogo";
-import { allowedOrderTypes } from "./app/permissions";
+import { allowedOrderTypes, can } from "./app/permissions";
 import { canAccessRoute, defaultRoute, demoAccounts } from "./app/roles";
 import type { Role } from "./app/roles";
 import { legacyRedirects, navItemsForRole } from "./app/navigation";
@@ -114,142 +110,6 @@ const mockClients = [
   { id: "CLI-003", name: "Maderas del Valle", sector: "Manufactura", status: "Activo", amount: 9800000 },
 ];
 
-const mockMaterials = [
-  { code: "MAT-301", name: "Motor 7.5HP", stock: 18, minStock: 12, category: "Mecánica", unit: "unidad" },
-  { code: "MAT-422", name: "Rodamiento SKF 6205", stock: 42, minStock: 15, category: "Mecánica", unit: "unidad" },
-  { code: "MAT-114", name: "Cinta aislante 3M", stock: 9, minStock: 20, category: "Eléctrica", unit: "rollo" },
-  { code: "MAT-880", name: "Soldadura ER70S-6", stock: 27, minStock: 10, category: "Soldadura", unit: "kilo" },
-];
-
-type MaterialMasterRecord = {
-  code: string;
-  name: string;
-  minStock: number;
-  category: string;
-  unit: string;
-};
-
-const materialsStorageKey = keys.materialMaster;
-
-type EquipmentContractOption = { code: string; client: string };
-
-function readEquipmentContracts(): EquipmentContractOption[] {
-  const contracts = new Map<string, EquipmentContractOption>([
-    ["CT1234", { code: "CT1234", client: "Fiat Chile" }],
-  ]);
-  try {
-    const raw = localStorage.getItem(keys.clients);
-    const parsed: unknown = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(parsed)) throw new Error("El maestro de clientes no tiene formato de lista.");
-    for (const item of parsed) {
-      if (typeof item !== "object" || item === null ||
-        !("contractCode" in item) || typeof item.contractCode !== "string" ||
-        !item.contractCode.trim()) continue;
-      const client = "name" in item && typeof item.name === "string" ? item.name : "Cliente";
-      contracts.set(item.contractCode, { code: item.contractCode, client });
-    }
-  } catch (error) {
-    console.warn("No se pudieron leer los contratos para asociar equipos.", error);
-  }
-  return [...contracts.values()];
-}
-
-type MaterialRow = {
-  code: string;
-  name: string;
-  stock: number;
-  available: number;
-  quality: number;
-  inTransit: number;
-  minStock: number;
-  category: string;
-  unit: string;
-};
-
-function getMaterialRows(): MaterialRow[] {
-  type Balance = Pick<MaterialRow, "code" | "name" | "stock" | "available" | "quality" | "inTransit" | "unit">;
-  let balances: Map<string, Balance> | null = null;
-  try {
-    const raw = localStorage.getItem(keys.warehouseBins);
-    if (raw) {
-      const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) {
-        console.warn("El inventario local no tiene formato de lista; se muestran saldos demo.");
-      } else {
-        balances = new Map();
-        for (const row of parsed) {
-          if (
-            typeof row !== "object" || row === null ||
-            !("code" in row) || typeof row.code !== "string" ||
-            !("name" in row) || typeof row.name !== "string" ||
-            !("quantity" in row) || typeof row.quantity !== "number" ||
-            !("status" in row) || typeof row.status !== "string" ||
-            !("unit" in row) || typeof row.unit !== "string" ||
-            !Number.isFinite(row.quantity)
-          ) continue;
-          const balance = balances.get(row.code) ?? {
-            code: row.code,
-            name: row.name,
-            stock: 0,
-            available: 0,
-            quality: 0,
-            inTransit: 0,
-            unit: row.unit,
-          };
-          const quantity = Math.max(0, row.quantity);
-          if (row.status === "En tránsito") balance.inTransit += quantity;
-          else {
-            balance.stock += quantity;
-            if (
-              row.status === "Libre utilización" &&
-              (!("location" in row) || !["REC-UBICAR", "REC-CALIDAD", "TRANSITO"].includes(String(row.location).toUpperCase()))
-            ) {
-              balance.available += quantity;
-            } else if (row.status === "Bloqueado calidad") {
-              balance.quality += quantity;
-            }
-          }
-          balances.set(row.code, balance);
-        }
-      }
-    }
-  } catch (error) {
-    console.warn("No se pudo leer el inventario local; se muestran saldos demo.", error);
-  }
-
-  let savedMaster: MaterialMasterRecord[] = [];
-  try {
-    const raw = localStorage.getItem(materialsStorageKey);
-    if (raw) {
-      const parsed: unknown = JSON.parse(raw);
-      if (Array.isArray(parsed)) savedMaster = parsed as MaterialMasterRecord[];
-      else console.warn("El maestro de materiales local no tiene formato de lista.");
-    }
-  } catch (error) {
-    console.warn("No se pudo leer el maestro local de materiales.", error);
-  }
-  const master: MaterialMasterRecord[] = [...new Map(
-    [...mockMaterials.map(({ code, name, minStock, category, unit }) => ({ code, name, minStock, category, unit })), ...savedMaster]
-      .map((material) => [material.code, material] as const),
-  ).values()];
-  const knownCodes = new Set(master.map((material) => material.code));
-  const known = master.map((material): MaterialRow => {
-    const balance = balances?.get(material.code);
-    const demoStock = mockMaterials.find((item) => item.code === material.code)?.stock ?? 0;
-    return {
-      ...material,
-      stock: balance?.stock ?? (balances === null ? demoStock : 0),
-      available: balance?.available ?? (balances === null ? demoStock : 0),
-      quality: balance?.quality ?? 0,
-      inTransit: balance?.inTransit ?? 0,
-    };
-  });
-  const imported = [...(balances?.values() ?? [])]
-    .filter((balance) => !knownCodes.has(balance.code))
-    .map((balance): MaterialRow => ({ ...balance, minStock: 0, category: "Sin categoría" }));
-  return [...known, ...imported];
-}
-
 const metricCards = [
   { title: "Producción", value: "84.6%", detail: "+6.2% vs mes anterior", tone: "success" },
   { title: "OT activas", value: "32", detail: "7 pendientes de cierre", tone: "warning" },
@@ -263,42 +123,6 @@ const tasks = [
   "Enviar informe mensual a cliente Minera Sur",
   "Validar cotización de mantenimiento industrial",
 ];
-
-type AppDataBackup = {
-  format: typeof backupFormat;
-  version: 1;
-  schema: typeof SCHEMA;
-  exportedAt: string;
-  data: Record<string, string>;
-};
-
-const appDataPrefix = KEY_PREFIX;
-const sessionStorageKey = keys.session;
-
-function getAppDataBackup(): AppDataBackup {
-  const data: Record<string, string> = {};
-  for (let index = 0; index < localStorage.length; index += 1) {
-    const key = localStorage.key(index);
-    if (key?.startsWith(appDataPrefix) && key !== sessionStorageKey) {
-      const value = localStorage.getItem(key);
-      if (value !== null) data[key] = value;
-    }
-  }
-  return { format: backupFormat, version: 1, schema: SCHEMA, exportedAt: new Date().toISOString(), data };
-}
-
-function isAppDataBackup(value: unknown): value is AppDataBackup {
-  if (typeof value !== "object" || value === null ||
-    !("format" in value) || value.format !== backupFormat ||
-    !("version" in value) || value.version !== 1 ||
-    !("schema" in value) || value.schema !== SCHEMA ||
-    !("data" in value) || typeof value.data !== "object" || value.data === null || Array.isArray(value.data)) {
-    return false;
-  }
-  return Object.entries(value.data).every(([key, item]) =>
-    key.startsWith(appDataPrefix) && key !== sessionStorageKey && typeof item === "string",
-  );
-}
 
 function App() {
   const [session, setSession] = useState<Session | null>(readSession);
@@ -556,8 +380,8 @@ function AppLayout({ session, onLogout }: AppLayoutProps) {
         <Box sx={{ p: 3 }}>
           <Routes>
             <Route path="/dashboard" element={<RoleRoute role={session.role} path="/dashboard"><DashboardPage /></RoleRoute>} />
-            <Route path="/clientes" element={<RoleRoute role={session.role} path="/clientes"><ClientsPage /></RoleRoute>} />
-            <Route path="/materiales" element={<RoleRoute role={session.role} path="/materiales"><MaterialesPage role={session.role} /></RoleRoute>} />
+            <Route path="/clientes" element={<RoleRoute role={session.role} path="/clientes"><ClientsPage role={session.role} /></RoleRoute>} />
+            <Route path="/materiales" element={<RoleRoute role={session.role} path="/materiales"><MaterialsMaster mode={can(session.role, "material.create") ? "master" : "readonly"} user={session.user} role={session.role} /></RoleRoute>} />
             <Route path="/produccion" element={<RoleRoute role={session.role} path="/produccion"><ProductionPage user={session.user} role={session.role} /></RoleRoute>} />
             <Route path="/bandeja" element={<RoleRoute role={session.role} path="/bandeja"><TechnicianInbox user={session.user} role={session.role} /></RoleRoute>} />
             {Object.entries(legacyRedirects).map(([from, to]) => (
@@ -568,12 +392,12 @@ function AppLayout({ session, onLogout }: AppLayoutProps) {
             <Route path="/contabilidad" element={<RoleRoute role={session.role} path="/contabilidad"><AccountingPage role={session.role} /></RoleRoute>} />
             <Route path="/rrhh" element={<RoleRoute role={session.role} path="/rrhh"><HumanResourcesPage user={session.user} role={session.role} /></RoleRoute>} />
             <Route path="/calidad" element={<RoleRoute role={session.role} path="/calidad"><QualityPage user={session.user} role={session.role} /></RoleRoute>} />
-            <Route path="/ingenieria" element={<RoleRoute role={session.role} path="/ingenieria"><IndustrialRoutes user={session.user} /></RoleRoute>} />
+            <Route path="/ingenieria" element={<RoleRoute role={session.role} path="/ingenieria"><EngineeringPage user={session.user} role={session.role} /></RoleRoute>} />
             <Route path="/planes-mantenimiento" element={<RoleRoute role={session.role} path="/planes-mantenimiento"><MaintenancePlanning role={session.role} /></RoleRoute>} />
             <Route path="/planning" element={<RoleRoute role={session.role} path="/planning"><MaintenancePlanning role={session.role} /></RoleRoute>} />
-            <Route path="/supply" element={<RoleRoute role={session.role} path="/supply"><SupplyPage /></RoleRoute>} />
+            <Route path="/supply" element={<RoleRoute role={session.role} path="/supply"><SupplyPage user={session.user} role={session.role} /></RoleRoute>} />
             <Route path="/pm" element={<RoleRoute role={session.role} path="/pm"><ProjectManagement role={session.role} /></RoleRoute>} />
-            <Route path="/respaldo" element={<RoleRoute role={session.role} path="/respaldo"><DataBackupPage /></RoleRoute>} />
+            <Route path="/respaldo" element={<RoleRoute role={session.role} path="/respaldo"><DataBackupPage role={session.role} /></RoleRoute>} />
             <Route path="/" element={<Navigate to={defaultRoute(session.role)} replace />} />
             <Route path="*" element={<ModulePage title="Página no encontrada" />} />
           </Routes>
@@ -583,9 +407,18 @@ function AppLayout({ session, onLogout }: AppLayoutProps) {
   );
 }
 
-function DataBackupPage() {
+function DataBackupPage({ role }: { role: Role }) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+
+  const resetDemo = () => {
+    setError("");
+    setMessage("");
+    if (!window.confirm("Se borrarán todos los datos de este navegador y se cargarán los datos demo. ¿Deseas continuar?")) return;
+    const result = resetDemoData(role);
+    if (!result.ok) setError(result.error);
+    else setMessage("Datos demo restablecidos. Recarga la página para verlos en todos los módulos.");
+  };
 
   const exportBackup = () => {
     try {
@@ -617,35 +450,13 @@ function DataBackupPage() {
       return;
     }
     try {
-      const parsed: unknown = JSON.parse(await file.text());
-      if (typeof parsed === "object" && parsed !== null && (!("schema" in parsed) || parsed.schema !== SCHEMA)) {
-        throw new Error(`Respaldo rechazado: su versión de esquema no es compatible (se requiere "${SCHEMA}").`);
-      }
-      if (!isAppDataBackup(parsed)) {
-        throw new Error("El archivo no es un respaldo válido de PMOptimizer.");
-      }
-      const entries = Object.entries(parsed.data);
-      if (!entries.length) throw new Error("El respaldo no contiene datos para restaurar.");
-      if (!window.confirm(`Se reemplazarán los datos PMOptimizer de este navegador por ${entries.length} registros del archivo. La sesión actual se conservará. ¿Deseas continuar?`)) {
-        return;
-      }
-      const previousData: Record<string, string> = {};
-      for (let index = 0; index < localStorage.length; index += 1) {
-        const key = localStorage.key(index);
-        if (key?.startsWith(appDataPrefix) && key !== sessionStorageKey) {
-          const value = localStorage.getItem(key);
-          if (value !== null) previousData[key] = value;
-        }
-      }
-      try {
-        Object.keys(previousData).forEach((key) => localStorage.removeItem(key));
-        entries.forEach(([key, value]) => localStorage.setItem(key, value));
-      } catch (cause) {
-        Object.keys(getAppDataBackup().data).forEach((key) => localStorage.removeItem(key));
-        Object.entries(previousData).forEach(([key, value]) => localStorage.setItem(key, value));
-        throw cause;
-      }
-      setMessage(`Respaldo restaurado: ${entries.length} conjuntos de datos. Recarga la página para verlos en todos los módulos.`);
+      const parsed = parseBackup(await file.text());
+      if (!parsed.ok) throw new Error(parsed.error);
+      const count = Object.keys(parsed.value.data).length;
+      if (!window.confirm(`Se reemplazarán los datos PMOptimizer de este navegador por ${count} registros del archivo. La sesión actual se conservará. ¿Deseas continuar?`)) return;
+      const restored = restoreBackup(parsed.value, role);
+      if (!restored.ok) throw new Error(restored.error);
+      setMessage(`Respaldo restaurado: ${restored.value} conjuntos de datos. Recarga la página para verlos en todos los módulos.`);
     } catch (cause) {
       console.error("No se pudo restaurar el respaldo de PMOptimizer.", cause);
       setError(cause instanceof Error ? cause.message : "No se pudo leer o restaurar el archivo.");
@@ -680,15 +491,20 @@ function DataBackupPage() {
           </Button>
         </Stack>
       </Paper>
+      <Paper sx={{ p: 3 }}>
+        <Stack spacing={2} sx={{ alignItems: "flex-start" }}>
+          <Typography variant="h6">Restablecer datos demo</Typography>
+          <Typography color="text.secondary">Reemplaza todos los datos de este navegador por el conjunto demo inicial (contadores de numeración incluidos). La sesión se conserva.</Typography>
+          <Button variant="outlined" color="warning" onClick={resetDemo}>Restablecer datos demo</Button>
+        </Stack>
+      </Paper>
     </Stack>
   );
 }
 
 function Sidebar({ role, onNavigate }: { role: Role; onNavigate?: () => void }) {
   const location = useLocation();
-  const criticalMaterials = getMaterialRows().filter((material) =>
-    material.minStock > 0 && material.available <= material.minStock,
-  ).length;
+  const criticalMaterials = getMaterialRows().filter(isCritical).length;
   const visibleNavItems = navItemsForRole(role);
 
   return (
@@ -815,9 +631,7 @@ function DashboardPage() {
   const totalClientes = mockClients.length;
   const materials = getMaterialRows();
   const totalMateriales = materials.length;
-  const materialesCriticos = materials.filter((material) =>
-    material.minStock > 0 && material.available <= material.minStock,
-  ).length;
+  const materialesCriticos = materials.filter(isCritical).length;
   const dashboardMetrics = metricCards.map((item) => item.title === "Inventario crítico"
     ? { ...item, value: String(materialesCriticos), detail: "Bajo stock mínimo utilizable" }
     : item);
@@ -934,363 +748,6 @@ function DashboardPage() {
   );
 }
 
-function MaterialesPage({ role }: { role: Role }) {
-  const [materials, setMaterials] = useState(getMaterialRows);
-  const [equipment, setEquipment] = useState(readEquipmentMaster);
-  const [equipmentDraft, setEquipmentDraft] = useState({ code: "", serialNumber: "", name: "", contractCode: "" });
-  const [equipmentError, setEquipmentError] = useState("");
-  const [equipmentMessage, setEquipmentMessage] = useState("");
-  const [showMaterialForm, setShowMaterialForm] = useState(false);
-  const [materialDraft, setMaterialDraft] = useState({ code: "", name: "", category: "", unit: "", minStock: "" });
-  const [materialError, setMaterialError] = useState("");
-  const isAdministrator = role === "Administrador";
-  const equipmentContracts = readEquipmentContracts();
-
-  const saveEquipment = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const code = equipmentDraft.code.trim();
-    const serialNumber = equipmentDraft.serialNumber.trim();
-    const name = equipmentDraft.name.trim();
-    if (!code || !serialNumber || !name || equipment.some((item) => item.code.toLowerCase() === code.toLowerCase()) ||
-      (serialNumber && equipment.some((item) => item.serialNumber?.toLowerCase() === serialNumber.toLowerCase())) ||
-      (equipmentDraft.contractCode && !equipmentContracts.some((contract) => contract.code === equipmentDraft.contractCode))) {
-      setEquipmentError("Completa código y descripción únicos, verifica que el número de serie no esté repetido y selecciona un contrato válido.");
-      return;
-    }
-    const next = [...equipment, { code, serialNumber, name, contractCode: equipmentDraft.contractCode }];
-    try {
-      localStorage.setItem(equipmentStorageKey, JSON.stringify(next));
-      setEquipment(readEquipmentMaster());
-      setEquipmentDraft({ code: "", serialNumber: "", name: "", contractCode: "" });
-      setEquipmentError("");
-      setEquipmentMessage("Equipo agregado al maestro.");
-    } catch (error) {
-      console.error("No se pudo guardar el equipo maestro.", error);
-      setEquipmentError("No se pudo guardar el equipo en este navegador.");
-    }
-  };
-
-  const importEquipment = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    setEquipmentError("");
-    setEquipmentMessage("");
-    if (!file) return;
-    if (!isAdministrator) {
-      setEquipmentError("Solo el Administrador puede realizar cargas masivas.");
-      return;
-    }
-    try {
-      const lines = (await file.text()).replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim());
-      if (lines.length < 2) throw new Error("El archivo CSV no contiene equipos para importar.");
-      const parseRow = (line: string) => {
-        const values: string[] = [];
-        let value = "";
-        let quoted = false;
-        for (let index = 0; index < line.length; index += 1) {
-          const character = line[index];
-          if (character === '"' && quoted && line[index + 1] === '"') {
-            value += '"';
-            index += 1;
-          } else if (character === '"') quoted = !quoted;
-          else if (character === "," && !quoted) {
-            values.push(value);
-            value = "";
-          } else value += character;
-        }
-        if (quoted) throw new Error("El archivo CSV contiene comillas sin cerrar.");
-        values.push(value);
-        return values;
-      };
-      const headers = parseRow(lines[0]).map((header) => header.trim());
-      const required = ["code", "serialNumber", "name", "contractCode"];
-      const indexes = new Map(headers.map((header, index) => [header, index]));
-      const missing = required.filter((header) => !indexes.has(header));
-      if (missing.length) throw new Error(`Faltan columnas requeridas: ${missing.join(", ")}.`);
-      const imported = lines.slice(1).map((line, rowIndex): EquipmentMaster => {
-        const values = parseRow(line);
-        const get = (header: string) => values[indexes.get(header) ?? -1]?.trim() ?? "";
-        const contractCode = get("contractCode");
-        if (!get("code") || !get("serialNumber") || !get("name")) {
-          throw new Error(`Fila ${rowIndex + 2}: código, número de serie y descripción son obligatorios.`);
-        }
-        if (contractCode && !equipmentContracts.some((contract) => contract.code === contractCode)) {
-          throw new Error(`Fila ${rowIndex + 2}: el contrato ${contractCode} no existe en el maestro de contratos.`);
-        }
-        return {
-          code: get("code"),
-          serialNumber: get("serialNumber"),
-          name: get("name"),
-          contractCode,
-        };
-      });
-      const existingCodes = new Set(equipment.map((item) => item.code.toLowerCase()));
-      const existingSerials = new Set(equipment.map((item) => item.serialNumber?.toLowerCase()).filter(Boolean));
-      const importedCodes = new Set<string>();
-      const importedSerials = new Set<string>();
-      for (const [index, item] of imported.entries()) {
-        const code = item.code.toLowerCase();
-        const serial = item.serialNumber?.toLowerCase() ?? "";
-        if (existingCodes.has(code) || importedCodes.has(code)) {
-          throw new Error(`Fila ${index + 2}: el código ${item.code} ya existe o está repetido.`);
-        }
-        if (serial && (existingSerials.has(serial) || importedSerials.has(serial))) {
-          throw new Error(`Fila ${index + 2}: el número de serie ${item.serialNumber} ya existe o está repetido.`);
-        }
-        importedCodes.add(code);
-        if (serial) importedSerials.add(serial);
-      }
-      const next = [...equipment, ...imported];
-      localStorage.setItem(equipmentStorageKey, JSON.stringify(next));
-      setEquipment(readEquipmentMaster());
-      setEquipmentMessage(`${imported.length} equipo(s) agregados al maestro.`);
-    } catch (error) {
-      console.error("No se pudo importar el maestro de equipos.", error);
-      setEquipmentError(error instanceof Error ? error.message : "No se pudo importar el archivo CSV.");
-    }
-  };
-
-  const downloadEquipmentTemplate = () => {
-    const csv = "code,serialNumber,name,contractCode\r\nVEH-004,SERIE-001,Equipo de ejemplo,CT1234\r\n";
-    const url = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "plantilla_maestro_equipos.csv";
-    anchor.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
-
-  const saveMaterial = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const code = materialDraft.code.trim();
-    const name = materialDraft.name.trim();
-    const minStock = Number(materialDraft.minStock || 0);
-    const master: MaterialMasterRecord[] = (() => {
-      try {
-        const parsed: unknown = JSON.parse(localStorage.getItem(materialsStorageKey) ?? "[]");
-        if (!Array.isArray(parsed)) throw new Error("El maestro guardado de materiales tiene un formato inválido.");
-        return parsed as MaterialMasterRecord[];
-      } catch (error) {
-        console.error("No se pudo leer el maestro de materiales antes de guardar.", error);
-        return [];
-      }
-    })();
-    if (!code || !name || !materialDraft.category.trim() || !materialDraft.unit.trim() ||
-      !Number.isFinite(minStock) || minStock < 0 ||
-      [...mockMaterials, ...master].some((item) => item.code.toLowerCase() === code.toLowerCase())) {
-      setMaterialError("Completa código, descripción, categoría y unidad; el código no debe estar duplicado.");
-      return;
-    }
-    const next = [...master, { code, name, category: materialDraft.category.trim(), unit: materialDraft.unit.trim(), minStock }];
-    try {
-      localStorage.setItem(materialsStorageKey, JSON.stringify(next));
-      setMaterials(getMaterialRows());
-      setMaterialDraft({ code: "", name: "", category: "", unit: "", minStock: "" });
-      setMaterialError("");
-      setShowMaterialForm(false);
-    } catch (error) {
-      console.error("No se pudo guardar el nuevo material.", error);
-      setMaterialError("No se pudo guardar el material en este navegador.");
-    }
-  };
-
-  const importMaterials = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    setMaterialError("");
-    if (!file) return;
-    if (!isAdministrator) {
-      setMaterialError("Solo el Administrador puede realizar cargas masivas.");
-      return;
-    }
-    try {
-      const lines = (await file.text()).replace(/^\uFEFF/, "").split(/\r?\n/).filter((line) => line.trim());
-      if (lines.length < 2) throw new Error("El archivo CSV no contiene materiales para importar.");
-      const parseRow = (line: string) => {
-        const values: string[] = [];
-        let value = "";
-        let quoted = false;
-        for (let index = 0; index < line.length; index += 1) {
-          const character = line[index];
-          if (character === '"' && quoted && line[index + 1] === '"') {
-            value += '"';
-            index += 1;
-          } else if (character === '"') quoted = !quoted;
-          else if (character === "," && !quoted) {
-            values.push(value);
-            value = "";
-          } else value += character;
-        }
-        if (quoted) throw new Error("El archivo CSV contiene comillas sin cerrar.");
-        values.push(value);
-        return values;
-      };
-      const headers = parseRow(lines[0]).map((value) => value.trim());
-      const required = ["code", "name", "category", "unit", "minStock"];
-      const indexes = new Map(headers.map((header, index) => [header, index]));
-      const missing = required.filter((header) => !indexes.has(header));
-      if (missing.length) throw new Error(`Faltan columnas requeridas: ${missing.join(", ")}.`);
-      const imported = lines.slice(1).map((line, rowIndex): MaterialMasterRecord => {
-        const values = parseRow(line);
-        const get = (header: string) => values[indexes.get(header) ?? -1]?.trim() ?? "";
-        const minStock = Number(get("minStock"));
-        if (!get("code") || !get("name") || !get("category") || !get("unit") ||
-          !get("minStock") || !Number.isFinite(minStock) || minStock < 0) {
-          throw new Error(`Fila ${rowIndex + 2}: datos incompletos o stock mínimo inválido.`);
-        }
-        return { code: get("code"), name: get("name"), category: get("category"), unit: get("unit"), minStock };
-      });
-      const stored: MaterialMasterRecord[] = (() => {
-        const raw = localStorage.getItem(materialsStorageKey);
-        if (!raw) return [];
-        const parsed: unknown = JSON.parse(raw);
-        if (!Array.isArray(parsed)) throw new Error("El maestro guardado de materiales tiene un formato inválido.");
-        return parsed as MaterialMasterRecord[];
-      })();
-      const existing = new Set([...mockMaterials, ...stored].map((item) => item.code.toLowerCase()));
-      const importedCodes = new Set<string>();
-      for (const [index, item] of imported.entries()) {
-        const key = item.code.toLowerCase();
-        if (existing.has(key) || importedCodes.has(key)) {
-          throw new Error(`Fila ${index + 2}: el código ${item.code} ya existe o está repetido en el archivo.`);
-        }
-        importedCodes.add(key);
-      }
-      localStorage.setItem(materialsStorageKey, JSON.stringify([...stored, ...imported]));
-      setMaterials(getMaterialRows());
-      setMaterialError("");
-    } catch (error) {
-      console.error("No se pudo importar el maestro de materiales.", error);
-      setMaterialError(error instanceof Error ? error.message : "No se pudo importar el archivo CSV.");
-    }
-  };
-
-  const downloadMaterialTemplate = () => {
-    const csv = "code,name,category,unit,minStock\r\nMAT-001,Repuesto de ejemplo,Mecánica,unidad,5\r\n";
-    const url = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "plantilla_maestro_materiales.csv";
-    anchor.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
-
-  return (
-    <Stack spacing={3}>
-      <Stack direction={{ xs: "column", sm: "row" }} sx={{ justifyContent: "space-between", alignItems: { xs: "flex-start", sm: "center" }, mb: 3 }} spacing={2}>
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>Materiales y repuestos</Typography>
-        {isAdministrator && <Button variant="contained" startIcon={<Add />} onClick={() => setShowMaterialForm((visible) => !visible)} sx={{ borderRadius: 2, textTransform: "none" }}>
-          Nuevo material
-        </Button>}
-      </Stack>
-      {materialError && <Alert severity="error">{materialError}</Alert>}
-      {isAdministrator && (
-        <Paper sx={{ p: 2 }}>
-          <Stack direction={{ xs: "column", sm: "row" }} spacing={1}>
-            <Button variant="outlined" onClick={downloadMaterialTemplate}>Descargar plantilla CSV</Button>
-            <Button component="label" variant="outlined">
-              Carga masiva de materiales · solo Administrador
-              <input hidden type="file" accept=".csv,text/csv" onChange={importMaterials} />
-            </Button>
-          </Stack>
-        </Paper>
-      )}
-      {showMaterialForm && isAdministrator && (
-        <Paper component="form" onSubmit={saveMaterial} sx={{ p: 3 }}>
-          <Typography variant="h6" sx={{ mb: 2 }}>Nuevo material en el maestro</Typography>
-          <Grid container spacing={2}>
-            <Grid size={{ xs: 12, sm: 2 }}><TextField label="Código" value={materialDraft.code} onChange={(event) => setMaterialDraft((current) => ({ ...current, code: event.target.value }))} required fullWidth /></Grid>
-            <Grid size={{ xs: 12, sm: 4 }}><TextField label="Descripción" value={materialDraft.name} onChange={(event) => setMaterialDraft((current) => ({ ...current, name: event.target.value }))} required fullWidth /></Grid>
-            <Grid size={{ xs: 12, sm: 2 }}><TextField label="Categoría" value={materialDraft.category} onChange={(event) => setMaterialDraft((current) => ({ ...current, category: event.target.value }))} required fullWidth /></Grid>
-            <Grid size={{ xs: 12, sm: 2 }}><TextField label="Unidad" value={materialDraft.unit} onChange={(event) => setMaterialDraft((current) => ({ ...current, unit: event.target.value }))} required fullWidth /></Grid>
-            <Grid size={{ xs: 12, sm: 2 }}><TextField label="Stock mínimo" type="number" value={materialDraft.minStock} onChange={(event) => setMaterialDraft((current) => ({ ...current, minStock: event.target.value }))} slotProps={{ htmlInput: { min: 0, step: "any" } }} required fullWidth /></Grid>
-            <Grid size={{ xs: 12 }}><Button type="submit" variant="contained">Guardar material</Button></Grid>
-          </Grid>
-        </Paper>
-      )}
-
-      <Paper sx={{ p: 2, borderRadius: 3, overflow: "hidden", border: "1px solid rgba(148,163,184,0.15)" }}>
-        <Box component="table" sx={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead>
-            <tr>
-              <TableHeadCell>Código</TableHeadCell>
-              <TableHeadCell>Material</TableHeadCell>
-              <TableHeadCell>Categoría</TableHeadCell>
-              <TableHeadCell>Disponible</TableHeadCell>
-              <TableHeadCell>Bloqueado QC</TableHeadCell>
-              <TableHeadCell>En tránsito</TableHeadCell>
-              <TableHeadCell>Mínimo</TableHeadCell>
-              <TableHeadCell>Estado</TableHeadCell>
-            </tr>
-          </thead>
-          <tbody>
-            {materials.map((item) => {
-              const hasMinimum = item.minStock > 0;
-              const isCritical = hasMinimum && item.available <= item.minStock;
-              return (
-                <tr key={item.code}>
-                  <TableBodyCell>{item.code}</TableBodyCell>
-                  <TableBodyCell>{item.name}</TableBodyCell>
-                  <TableBodyCell>{item.category}</TableBodyCell>
-                  <TableBodyCell>{item.available} {item.unit}</TableBodyCell>
-                  <TableBodyCell>{item.quality} {item.unit}</TableBodyCell>
-                  <TableBodyCell>{item.inTransit} {item.unit}</TableBodyCell>
-                  <TableBodyCell>{item.minStock} {item.unit}</TableBodyCell>
-                  <TableBodyCell>
-                    <Chip
-                      label={!hasMinimum ? "Sin mínimo" : isCritical ? "Crítico" : "OK"}
-                      color={!hasMinimum ? "default" : isCritical ? "error" : "success"}
-                      size="small"
-                      sx={{ borderRadius: 1 }}
-                    />
-                  </TableBodyCell>
-                </tr>
-              );
-            })}
-          </tbody>
-        </Box>
-      </Paper>
-      <Paper sx={{ p: 3 }}>
-        <Typography variant="h6" sx={{ mb: 2 }}>Maestro de equipos y activos</Typography>
-        {equipmentError && <Alert severity="error" sx={{ mb: 2 }}>{equipmentError}</Alert>}
-        {equipmentMessage && <Alert severity="success" sx={{ mb: 2 }}>{equipmentMessage}</Alert>}
-        {isAdministrator && (
-          <>
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mb: 2 }}>
-              <Button variant="outlined" onClick={downloadEquipmentTemplate}>Descargar plantilla CSV</Button>
-              <Button component="label" variant="outlined">
-                Carga masiva de equipos · solo Administrador
-                <input hidden type="file" accept=".csv,text/csv" onChange={importEquipment} />
-              </Button>
-            </Stack>
-            <Stack component="form" direction={{ xs: "column", md: "row" }} spacing={1} sx={{ mb: 2 }} onSubmit={saveEquipment}>
-              <TextField size="small" label="Código de equipo" value={equipmentDraft.code} onChange={(event) => setEquipmentDraft((current) => ({ ...current, code: event.target.value }))} required />
-              <TextField size="small" label="Número de serie" value={equipmentDraft.serialNumber} onChange={(event) => setEquipmentDraft((current) => ({ ...current, serialNumber: event.target.value }))} required />
-              <TextField size="small" label="Descripción del activo" value={equipmentDraft.name} onChange={(event) => setEquipmentDraft((current) => ({ ...current, name: event.target.value }))} required fullWidth />
-              <TextField select size="small" label="Contrato asociado" value={equipmentDraft.contractCode} onChange={(event) => setEquipmentDraft((current) => ({ ...current, contractCode: event.target.value }))} sx={{ minWidth: 220 }}>
-                <MenuItem value="">Sin contrato</MenuItem>
-                {equipmentContracts.map((contract) => <MenuItem key={contract.code} value={contract.code}>{contract.code} · {contract.client}</MenuItem>)}
-              </TextField>
-              <Button type="submit" variant="outlined">Agregar al maestro</Button>
-            </Stack>
-          </>
-        )}
-        <Table size="small">
-          <TableHead><TableRow><TableCell>Código</TableCell><TableCell>Número de serie</TableCell><TableCell>Descripción del activo</TableCell><TableCell>Contrato asociado</TableCell></TableRow></TableHead>
-          <TableBody>{equipment.map((item) => (
-            <TableRow key={item.code}>
-              <TableCell>{item.code}</TableCell>
-              <TableCell>{item.serialNumber || "—"}</TableCell>
-              <TableCell>{item.name}</TableCell>
-              <TableCell>{item.contractCode || "Sin contrato"}</TableCell>
-            </TableRow>
-          ))}</TableBody>
-        </Table>
-      </Paper>
-    </Stack>
-  );
-}
-
 function StatCard({
   title,
   value,
@@ -1364,34 +821,6 @@ function ModulePage({ title }: { title: string }) {
         Este módulo aún no está implementado.
       </Typography>
     </Paper>
-  );
-}
-
-function TableHeadCell({
-  children,
-  align = "left",
-}: {
-  children: ReactNode;
-  align?: "left" | "right" | "center";
-}) {
-  return (
-    <th style={{ textAlign: align, padding: "14px 16px", borderBottom: "1px solid #e2e8f0", color: "#475569", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-      {children}
-    </th>
-  );
-}
-
-function TableBodyCell({
-  children,
-  align = "left",
-}: {
-  children: ReactNode;
-  align?: "left" | "right" | "center";
-}) {
-  return (
-    <td style={{ padding: "16px", borderBottom: "1px solid #f1f5f9", textAlign: align, verticalAlign: "middle" }}>
-      {children}
-    </td>
   );
 }
 

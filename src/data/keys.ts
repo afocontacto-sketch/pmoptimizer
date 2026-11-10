@@ -35,8 +35,6 @@ export const keys = {
   approvedBudget: k("approved-budget"),
   // Temporales: se eliminan en E0.2/E7.1 (flujos de Supply y llamadas persistidas).
   maintenanceCalls: k("maintenance-calls"),
-  warehousePicking: k("warehouse-picking"),
-  stockMovements: k("stock-movements"),
   // Módulos de Copilot sin commit (QualityPage, ClientsPage, ProductionPage); a consolidar luego.
   clientsV2: k("clients-v2"),
   contractFiles: k("contracts-files"),

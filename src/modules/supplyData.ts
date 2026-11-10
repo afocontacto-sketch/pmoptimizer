@@ -25,6 +25,9 @@ export type PurchaseRequest = {
   quantity: number;
   needDate: string;
   callIds: string[];
+  wbs?: string;
+  contract?: string;
+  createdBy?: string;
   status: PurchaseRequestStatus;
   supplier?: string;
   quotedUnitCost?: number;
@@ -57,6 +60,9 @@ export type PurchaseOrder = {
   unitCost: number;
   expectedDate: string;
   receivedQuantity?: number;
+  wbs?: string;
+  contract?: string;
+  createdBy?: string;
   status: "Pendiente aprobación" | "Aprobada" | "Rechazada" | "Recepcionada";
   approvedBy?: string;
   selectedQuoteId?: string;
@@ -93,4 +99,22 @@ export function readStoredList<T>(key: string): T[] {
 
 export function makeSupplyId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+}
+
+export type CostAssignment = { contract: string; wbs: string };
+
+// WBS/contrato de una solicitud: el guardado en ella o, si viene del MRP, el del plan de su primera llamada.
+export function requestCostAssignment(
+  request: Pick<PurchaseRequest, "callIds" | "wbs" | "contract">,
+  calls: { id: string; plan: { contract: string; wbs: string } }[],
+): CostAssignment | null {
+  if (request.wbs && request.contract) return { contract: request.contract, wbs: request.wbs };
+  const call = calls.find((item) => request.callIds.includes(item.id) && item.plan.wbs);
+  return call ? { contract: call.plan.contract, wbs: call.plan.wbs } : null;
+}
+
+// Una factura de compra sin OC debe imputarse a un WBS; con OC hereda el de la OC.
+export function purchaseInvoiceWbsError(input: { kind: string; purchaseOrder?: string; wbs?: string }): string | null {
+  if (input.kind !== "Compra" || input.purchaseOrder?.trim()) return null;
+  return input.wbs?.trim() ? null : "Las facturas de compra sin OC exigen contrato y elemento WBS.";
 }
