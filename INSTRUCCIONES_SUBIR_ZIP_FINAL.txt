@@ -1,0 +1,46 @@
+═══════════════════════════════════════════════════════════════════════════════
+                  INSTRUCCIONES PARA SUBIR EL ZIP FINAL
+═══════════════════════════════════════════════════════════════════════════════
+
+❌ PROBLEMA: Los archivos CSS y JS no se cargaban (error 404)
+✅ SOLUCIÓN: ZIP correctamente estructurado: pmoptimizer-build-final.zip
+
+═══════════════════════════════════════════════════════════════════════════════
+PASOS:
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Abre Amplify Console: https://amplify.aws.amazon.com/
+
+2. Haz clic en tu app: pmoptimizer-demo
+
+3. Ve a "Información general"
+
+4. En la sección "Ramificaciones", haz clic en: "Implementar actualizaciones"
+
+5. OPCIÓN A - Sube el ZIP:
+   ✓ Selecciona archivo: pmoptimizer-build-final.zip
+   ✓ Clic en "Implementar"
+   
+   OPCIÓN B - Arrastra (más rápido):
+   ✓ Abre explorador de archivos
+   ✓ Navega a: C:\Users\israel\OneDrive\proyecto software 1
+   ✓ Arrastra pmoptimizer-build-final.zip a Amplify Console
+
+6. Espera 2-5 minutos a que se procese
+
+7. Cuando diga "Implementación realizada", haz clic en:
+   "Visitar URL implementada"
+
+8. ¡Verás la app con logo, menú y todo funcional!
+
+═══════════════════════════════════════════════════════════════════════════════
+VALIDACIÓN POST-DESPLIEGUE:
+═══════════════════════════════════════════════════════════════════════════════
+
+✓ URL carga sin error 404
+✓ Logo PMOptimizer visible
+✓ Menú lateral funcional
+✓ Puedo hacer login
+✓ Las rutas funcionan: /ordenes, /produccion, /calidad
+
+═══════════════════════════════════════════════════════════════════════════════
