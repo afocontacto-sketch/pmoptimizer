@@ -3,6 +3,7 @@ import { defineConfig } from 'vitest/config'
 
 // https://vite.dev/config/
 export default defineConfig({
+  base: '/pmoptimizer/',
   plugins: [react()],
   test: {
     include: ['tests/**/*.test.ts'],
