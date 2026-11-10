@@ -1,4 +1,5 @@
 import { keys } from "../data/keys";
+import { demoAccounts } from "../app/roles";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import {
@@ -199,7 +200,7 @@ export default function HumanResourcesPage() {
   const [runs, setRuns] = useState(() => readList<PayrollRun>(payrollRunsStorageKey, []));
   const [leaves, setLeaves] = useState(() => readList<EmployeeLeave>(hrLeavesStorageKey, []));
   const [editingEmployeeId, setEditingEmployeeId] = useState("");
-  const [draft, setDraft] = useState({ name: "", position: "", contractType: "Indefinido" as Employee["contractType"], contractStart: new Date().toISOString().slice(0, 10), contractEnd: "", employmentContractNumber: "", workSchedule: "", workplace: "", monthlySalary: "", hoursPerMonth: "180", deductionPercent: "20", direct: true, contractCodes: contracts[0]?.code ? [contracts[0].code] : [], supervisorId: "", supervisorLogin: "" });
+  const [draft, setDraft] = useState({ name: "", position: "", contractType: "Indefinido" as Employee["contractType"], contractStart: new Date().toISOString().slice(0, 10), contractEnd: "", employmentContractNumber: "", workSchedule: "", workplace: "", monthlySalary: "", hoursPerMonth: "180", deductionPercent: "20", direct: true, contractCodes: contracts[0]?.code ? [contracts[0].code] : [], supervisorId: "", supervisorLogin: "", login: "" });
   const [leaveDraft, setLeaveDraft] = useState({ employeeId: "", type: "Vacaciones" as LeaveType, startDate: new Date().toISOString().slice(0, 10), endDate: new Date().toISOString().slice(0, 10), details: "" });
   const [editingContractId, setEditingContractId] = useState("");
   const [contractDraft, setContractDraft] = useState({ code: "", client: "", type: "mixto" as HrContract["type"], costPerHour: "", startDate: new Date().toISOString().slice(0, 10), endDate: "", description: "" });
@@ -291,6 +292,10 @@ export default function HumanResourcesPage() {
       setError("Completa los datos del colaborador y selecciona un contrato para imputación (uno para personal directo o uno o más para personal indirecto).");
       return;
     }
+    if (draft.login && employees.some((item) => item.login === draft.login && item.id !== editingEmployeeId)) {
+      setError("Ese usuario del sistema ya está vinculado a otro colaborador.");
+      return;
+    }
     const contractCodes = selectedContracts.map((contract) => contract.code);
     const employee: Employee = {
       ...draft,
@@ -305,6 +310,7 @@ export default function HumanResourcesPage() {
       contractCode: direct ? contractCodes[0] : "",
       supervisorId: draft.supervisorId || undefined,
       supervisorLogin: isSupervisor ? draft.supervisorLogin : undefined,
+      login: draft.login || undefined,
     };
     const next = editingEmployeeId
       ? employees.map((item) => item.id === editingEmployeeId ? employee : item)
@@ -313,7 +319,7 @@ export default function HumanResourcesPage() {
       localStorage.setItem(hrEmployeesStorageKey, JSON.stringify(next));
       setEmployees(next);
       setEditingEmployeeId("");
-      setDraft({ name: "", position: "", contractType: "Indefinido", contractStart: new Date().toISOString().slice(0, 10), contractEnd: "", employmentContractNumber: "", workSchedule: "", workplace: "", monthlySalary: "", hoursPerMonth: "180", deductionPercent: "20", direct: true, contractCodes: contracts[0]?.code ? [contracts[0].code] : [], supervisorId: "", supervisorLogin: "" });
+      setDraft({ name: "", position: "", contractType: "Indefinido", contractStart: new Date().toISOString().slice(0, 10), contractEnd: "", employmentContractNumber: "", workSchedule: "", workplace: "", monthlySalary: "", hoursPerMonth: "180", deductionPercent: "20", direct: true, contractCodes: contracts[0]?.code ? [contracts[0].code] : [], supervisorId: "", supervisorLogin: "", login: "" });
       setError("");
       setMessage(editingEmployeeId ? "Antecedentes del colaborador actualizados." : "Colaborador creado.");
     } catch (cause) {
@@ -340,6 +346,7 @@ export default function HumanResourcesPage() {
       contractCodes: employee.contractCodes?.length ? employee.contractCodes : employee.contractCode ? [employee.contractCode] : [],
       supervisorId: employee.supervisorId ?? "",
       supervisorLogin: employee.supervisorLogin ?? "",
+      login: employee.login ?? "",
     });
     setError("");
     setMessage("");
@@ -580,7 +587,16 @@ export default function HumanResourcesPage() {
               <MenuItem value="supervisor">supervisor · cuenta demo</MenuItem>
             </TextField>
           </Grid>}
-          <Grid size={{ xs: 12, md: 3 }}><Stack direction="row" spacing={1}><Button type="submit" variant="contained">{editingEmployeeId ? "Guardar cambios" : "Guardar colaborador"}</Button>{editingEmployeeId && <Button onClick={() => { setEditingEmployeeId(""); setDraft({ name: "", position: "", contractType: "Indefinido", contractStart: new Date().toISOString().slice(0, 10), contractEnd: "", employmentContractNumber: "", workSchedule: "", workplace: "", monthlySalary: "", hoursPerMonth: "180", deductionPercent: "20", direct: true, contractCodes: contracts[0]?.code ? [contracts[0].code] : [], supervisorId: "", supervisorLogin: "" }); }}>Cancelar</Button>}</Stack></Grid>
+          {!draft.position.toLowerCase().includes("supervisor") && <Grid size={{ xs: 12, md: 3 }}>
+            <TextField select label="Usuario del sistema (Técnico)" value={draft.login} onChange={(event) => setDraft((current) => ({ ...current, login: event.target.value }))} helperText="Vincula al colaborador con su usuario Técnico. Cada usuario solo puede asignarse a un colaborador." fullWidth>
+              <MenuItem value="">Sin usuario</MenuItem>
+              {demoAccounts.filter((account) => account.role === "Técnico").map((account) => {
+                const takenBy = employees.find((item) => item.login === account.username && item.id !== editingEmployeeId);
+                return <MenuItem key={account.username} value={account.username} disabled={Boolean(takenBy)}>{account.username}{takenBy ? ` · ya vinculado a ${takenBy.name}` : ""}</MenuItem>;
+              })}
+            </TextField>
+          </Grid>}
+          <Grid size={{ xs: 12, md: 3 }}><Stack direction="row" spacing={1}><Button type="submit" variant="contained">{editingEmployeeId ? "Guardar cambios" : "Guardar colaborador"}</Button>{editingEmployeeId && <Button onClick={() => { setEditingEmployeeId(""); setDraft({ name: "", position: "", contractType: "Indefinido", contractStart: new Date().toISOString().slice(0, 10), contractEnd: "", employmentContractNumber: "", workSchedule: "", workplace: "", monthlySalary: "", hoursPerMonth: "180", deductionPercent: "20", direct: true, contractCodes: contracts[0]?.code ? [contracts[0].code] : [], supervisorId: "", supervisorLogin: "", login: "" }); }}>Cancelar</Button>}</Stack></Grid>
         </Grid>
       </Paper>
       <Paper sx={{ p: 3 }}>

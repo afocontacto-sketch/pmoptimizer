@@ -38,16 +38,10 @@ import {
 import {
   AccountCircle,
   Add,
-  Build,
-  Dashboard as DashboardIcon,
   Download,
-  Inventory2,
   Logout,
   Menu as MenuIcon,
-  People,
   Search,
-  ShoppingCart,
-  Timeline,
   UploadFile,
   WarningAmber,
 } from "@mui/icons-material";
@@ -73,6 +67,13 @@ import QualityPage from "./modules/QualityPage";
 import ProductionPage from "./modules/ProductionPage";
 import { equipmentStorageKey, readEquipmentMaster } from "./modules/masterData";
 import type { EquipmentMaster } from "./modules/masterData";
+import { BrandLogo } from "./components/BrandLogo";
+import { allowedOrderTypes } from "./app/permissions";
+import { canAccessRoute, defaultRoute, demoAccounts } from "./app/roles";
+import type { Role } from "./app/roles";
+import { legacyRedirects, navItemsForRole } from "./app/navigation";
+import { clearSession, readSession, saveSession } from "./app/session";
+import type { Session } from "./app/session";
 
 const theme = createTheme({
   palette: {
@@ -262,13 +263,6 @@ const tasks = [
   "Validar cotización de mantenimiento industrial",
 ];
 
-type Session = {
-  user: string;
-  role: Role;
-};
-
-type Role = "Administrador" | "Supervisor" | "Planificador" | "PM Proyecto" | "Compras" | "Contabilidad" | "Producción" | "Industrial" | "Ingeniería" | "Calidad";
-
 type AppDataBackup = {
   format: typeof backupFormat;
   version: 1;
@@ -305,69 +299,12 @@ function isAppDataBackup(value: unknown): value is AppDataBackup {
   );
 }
 
-const roles: Role[] = ["Administrador", "Supervisor", "Planificador", "PM Proyecto", "Compras", "Contabilidad", "Producción", "Industrial", "Ingeniería", "Calidad"];
-
-const demoAccounts: { username: string; password: string; role: Role }[] = [
-  { username: "compras", password: "compras2026", role: "Compras" },
-  { username: "contabilidad", password: "contabilidad2026", role: "Contabilidad" },
-  { username: "produccion", password: "produccion2026", role: "Producción" },
-  { username: "industrial", password: "industrial2026", role: "Industrial" },
-  { username: "ingenieria", password: "ingenieria2026", role: "Ingeniería" },
-  { username: "calidad", password: "calidad2026", role: "Calidad" },
-  { username: "supervisor", password: "supervisor2026", role: "Supervisor" },
-  { username: "planificador", password: "planificador2026", role: "Planificador" },
-  { username: "pm", password: "pm2026", role: "PM Proyecto" },
-  { username: "IJOV", password: "ADMIN", role: "Administrador" },
-];
-
-const roleModules: Record<Role, string[]> = {
-  Administrador: ["*"],
-  Supervisor: ["/personal", "/produccion", "/almacen"],
-  Planificador: ["/dashboard", "/planning", "/planes-mantenimiento", "/supply", "/pm", "/produccion"],
-  "PM Proyecto": ["/dashboard", "/planning", "/planes-mantenimiento", "/compras", "/pm"],
-  Compras: ["/dashboard", "/clientes", "/materiales", "/compras", "/supply", "/almacen"],
-  Contabilidad: ["/dashboard", "/clientes", "/contabilidad", "/rrhh"],
-  Producción: ["/dashboard", "/materiales", "/produccion", "/almacen", "/planes-mantenimiento", "/planning", "/supply"],
-  Industrial: ["/dashboard", "/materiales", "/produccion", "/almacen", "/ingenieria", "/hojas-ruta", "/planes-mantenimiento", "/planning", "/supply"],
-  Ingeniería: ["/dashboard", "/materiales", "/produccion", "/almacen", "/ingenieria", "/planes-mantenimiento", "/planning"],
-  Calidad: ["/dashboard", "/almacen", "/calidad"],
-};
-
-function readSession(): Session | null {
-  const raw = localStorage.getItem(keys.session);
-  if (!raw) return null;
-
-  try {
-    const stored: unknown = JSON.parse(raw);
-    if (
-      typeof stored === "object" &&
-      stored !== null &&
-      "user" in stored &&
-      typeof stored.user === "string" &&
-      stored.user.trim().length > 0 &&
-      "role" in stored &&
-      typeof stored.role === "string"
-    ) {
-      const role = roles.find((item) => item === stored.role);
-      if (role) return { user: stored.user, role };
-    }
-  } catch (error) {
-    console.warn("La sesión guardada no se pudo leer y será eliminada.", error);
-  }
-
-  localStorage.removeItem(keys.session);
-  return null;
-}
-
 function App() {
   const [session, setSession] = useState<Session | null>(readSession);
 
   useEffect(() => {
-    if (session) {
-      localStorage.setItem(keys.session, JSON.stringify(session));
-    } else {
-      localStorage.removeItem(keys.session);
-    }
+    if (session) saveSession(session);
+    else clearSession();
   }, [session]);
 
   return (
@@ -377,7 +314,7 @@ function App() {
         <Routes>
           <Route
             path="/login"
-            element={session ? <Navigate to="/dashboard" replace /> : <LoginPage onLogin={setSession} />}
+            element={session ? <Navigate to={defaultRoute(session.role)} replace /> : <LoginPage onLogin={setSession} />}
           />
           <Route
             path="/*"
@@ -537,7 +474,7 @@ function LoginPage({ onLogin }: LoginPageProps) {
               <Typography variant="caption" color="text.secondary" component="div">
                 <strong>Cuentas demo por área</strong>
                 <br />
-                {demoAccounts.slice(0, 8).map(({ username: accountUser, password: accountPassword, role: accountRole }) => (
+                {demoAccounts.filter((account) => account.username !== "IJOV").map(({ username: accountUser, password: accountPassword, role: accountRole }) => (
                   <Fragment key={accountUser}>
                     {accountRole}: {accountUser} / {accountPassword}
                     <br />
@@ -558,40 +495,6 @@ type AppLayoutProps = {
   onLogout: () => void;
 };
 
-function BrandLogo({ compact = false, size }: { compact?: boolean; size?: number }) {
-  const [logoUnavailable, setLogoUnavailable] = useState(false);
-  const logoSize = size ?? (compact ? 48 : 160);
-
-  if (!logoUnavailable) {
-    return (
-      <Box
-        component="img"
-        src="/logo-pmoptimizer.jpg"
-        alt="PM Optimizer 360 · Consultoría Industrial"
-        onError={() => setLogoUnavailable(true)}
-        sx={{ width: logoSize, height: logoSize, objectFit: "contain", borderRadius: 2, bgcolor: "#fff" }}
-      />
-    );
-  }
-
-  return (
-    <Stack direction="row" spacing={1.5} sx={{ alignItems: "center" }}>
-      <Avatar
-        variant="rounded"
-        sx={{ width: compact ? 42 : 64, height: compact ? 42 : 64, bgcolor: "#2563eb", fontWeight: 800 }}
-      >
-        PMO
-      </Avatar>
-      <Typography
-        variant={compact ? "subtitle1" : "overline"}
-        sx={{ fontWeight: 800, letterSpacing: compact ? 0.8 : 2, color: "inherit" }}
-      >
-        PMOPTIMIZER
-      </Typography>
-    </Stack>
-  );
-}
-
 function RoleRoute({
   role,
   path,
@@ -601,9 +504,9 @@ function RoleRoute({
   path: string;
   children: ReactNode;
 }) {
-  return roleModules[role].includes("*") || roleModules[role].includes(path)
+  return canAccessRoute(role, path)
     ? <>{children}</>
-    : <Navigate to={role === "Supervisor" ? "/ordenes" : "/dashboard"} replace />;
+    : <Navigate to={defaultRoute(role)} replace />;
 }
 
 function AppLayout({ session, onLogout }: AppLayoutProps) {
@@ -655,20 +558,22 @@ function AppLayout({ session, onLogout }: AppLayoutProps) {
             <Route path="/clientes" element={<RoleRoute role={session.role} path="/clientes"><ClientsPage /></RoleRoute>} />
             <Route path="/materiales" element={<RoleRoute role={session.role} path="/materiales"><MaterialesPage role={session.role} /></RoleRoute>} />
             <Route path="/produccion" element={<RoleRoute role={session.role} path="/produccion"><ProductionPage user={session.user} role={session.role} /></RoleRoute>} />
-            <Route path="/personal" element={session.role === "Supervisor" ? <WorkOrders user={session.user} role={session.role} defaultTab={6} scope="team" /> : <Navigate to="/dashboard" replace />} />
+            <Route path="/bandeja" element={<RoleRoute role={session.role} path="/bandeja"><WorkOrders user={session.user} role={session.role} defaultTab={0} scope="operations" /></RoleRoute>} />
+            {Object.entries(legacyRedirects).map(([from, to]) => (
+              <Route key={from} path={from} element={<Navigate to={to} replace />} />
+            ))}
             <Route path="/almacen" element={<RoleRoute role={session.role} path="/almacen"><WorkOrders user={session.user} role={session.role} defaultTab={2} scope="warehouse" /></RoleRoute>} />
             <Route path="/compras" element={<RoleRoute role={session.role} path="/compras"><PurchasingPage role={session.role} user={session.user} /></RoleRoute>} />
             <Route path="/contabilidad" element={<RoleRoute role={session.role} path="/contabilidad"><AccountingPage role={session.role} /></RoleRoute>} />
             <Route path="/rrhh" element={<RoleRoute role={session.role} path="/rrhh"><HumanResourcesPage /></RoleRoute>} />
             <Route path="/calidad" element={<RoleRoute role={session.role} path="/calidad"><QualityPage /></RoleRoute>} />
             <Route path="/ingenieria" element={<RoleRoute role={session.role} path="/ingenieria"><IndustrialRoutes user={session.user} /></RoleRoute>} />
-            <Route path="/hojas-ruta" element={<RoleRoute role={session.role} path="/hojas-ruta"><IndustrialRoutes user={session.user} /></RoleRoute>} />
             <Route path="/planes-mantenimiento" element={<RoleRoute role={session.role} path="/planes-mantenimiento"><MaintenancePlanning role={session.role} /></RoleRoute>} />
             <Route path="/planning" element={<RoleRoute role={session.role} path="/planning"><MaintenancePlanning role={session.role} /></RoleRoute>} />
             <Route path="/supply" element={<RoleRoute role={session.role} path="/supply"><SupplyPage /></RoleRoute>} />
             <Route path="/pm" element={<RoleRoute role={session.role} path="/pm"><ProjectManagement role={session.role} /></RoleRoute>} />
             <Route path="/respaldo" element={<RoleRoute role={session.role} path="/respaldo"><DataBackupPage /></RoleRoute>} />
-            <Route path="/" element={<Navigate to={session.role === "Supervisor" ? "/produccion" : "/dashboard"} replace />} />
+            <Route path="/" element={<Navigate to={defaultRoute(session.role)} replace />} />
             <Route path="*" element={<ModulePage title="Página no encontrada" />} />
           </Routes>
         </Box>
@@ -783,26 +688,7 @@ function Sidebar({ role, onNavigate }: { role: Role; onNavigate?: () => void }) 
   const criticalMaterials = getMaterialRows().filter((material) =>
     material.minStock > 0 && material.available <= material.minStock,
   ).length;
-  const navItems = [
-    { label: "Dashboard", icon: <DashboardIcon />, to: "/dashboard" },
-    { label: "Clientes", icon: <People />, to: "/clientes" },
-    { label: "Materiales", icon: <Inventory2 />, to: "/materiales" },
-    { label: "Planning", icon: <Build />, to: "/planning" },
-    { label: "Producción", icon: <Build />, to: "/produccion" },
-    { label: "Ingeniería", icon: <Build />, to: "/ingenieria" },
-    { label: "Supply · MRP", icon: <Inventory2 />, to: "/supply" },
-    { label: "PM Proyecto", icon: <Timeline />, to: "/pm" },
-    { label: "Hojas de ruta", icon: <Build />, to: "/hojas-ruta" },
-    { label: "Personal", icon: <People />, to: "/personal" },
-    { label: "Almacén", icon: <Inventory2 />, to: "/almacen" },
-    { label: "Compras", icon: <ShoppingCart />, to: "/compras" },
-    { label: "Contabilidad", icon: <Timeline />, to: "/contabilidad" },
-    { label: "Recursos humanos", icon: <People />, to: "/rrhh" },
-    { label: "Calidad", icon: <WarningAmber />, to: "/calidad" },
-    { label: "Respaldo de datos", icon: <Inventory2 />, to: "/respaldo" },
-  ].filter((item) => (item.to !== "/personal" || role === "Supervisor") &&
-    (item.to !== "/respaldo" || role === "Administrador") &&
-    (roleModules[role].includes("*") || roleModules[role].includes(item.to)));
+  const visibleNavItems = navItemsForRole(role);
 
   return (
     <Box sx={{ p: 2 }}>
@@ -814,7 +700,7 @@ function Sidebar({ role, onNavigate }: { role: Role; onNavigate?: () => void }) 
       <Divider sx={{ my: 2, borderColor: "rgba(148,163,184,0.2)" }} />
 
       <List>
-        {navItems.map((item) => (
+        {visibleNavItems.map((item) => (
           <ListItemButton
             key={item.label}
             component={NavLink}
@@ -834,7 +720,7 @@ function Sidebar({ role, onNavigate }: { role: Role; onNavigate?: () => void }) 
               "&.active:hover": { background: "#15803d" },
             }}
           >
-            <ListItemIcon sx={{ color: "inherit", minWidth: 36 }}>{item.icon}</ListItemIcon>
+            <ListItemIcon sx={{ color: "inherit", minWidth: 36 }}><item.icon /></ListItemIcon>
             <ListItemText primary={item.label} />
           </ListItemButton>
         ))}
@@ -893,11 +779,11 @@ function TopBar({ session, onLogout, onMenuClick }: TopBarProps) {
           />
         </Box>
 
-        {["Administrador", "Producción", "Industrial", "Ingeniería"].includes(session.role) && (
+        {allowedOrderTypes(session.role).length > 0 && (
           <Button
             variant="contained"
             startIcon={<Add />}
-            onClick={() => navigate("/ordenes")}
+            onClick={() => navigate("/produccion?tab=ordenes")}
             sx={{ mr: 2, borderRadius: 2, textTransform: "none", display: { xs: "none", md: "inline-flex" } }}
           >
             Nueva OT

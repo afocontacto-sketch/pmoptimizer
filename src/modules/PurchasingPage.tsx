@@ -1,3 +1,5 @@
+import { can } from "../app/permissions";
+import type { Role } from "../app/roles";
 import { useEffect, useState } from "react";
 import { nextDocNumber } from "../data/docNumbering";
 import type { FormEvent } from "react";
@@ -32,7 +34,6 @@ import {
 } from "./supplyData";
 import type { PurchaseOrder, PurchaseQuote, PurchaseRequest, SupplierMaster, AwardHistory } from "./supplyData";
 
-type RoleName = "Administrador" | "Supervisor" | "Planificador" | "PM Proyecto" | "Compras" | "Contabilidad" | "Producción" | "Industrial" | "Ingeniería" | "Calidad";
 type QuoteDraft = { supplier: string; unitCost: string; expectedDate: string };
 const emptyQuote = (needDate: string): QuoteDraft => ({ supplier: "", unitCost: "", expectedDate: needDate });
 
@@ -40,7 +41,7 @@ function money(value: number): string {
   return new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(value);
 }
 
-export default function PurchasingPage({ role, user }: { role: RoleName; user: string }) {
+export default function PurchasingPage({ role, user }: { role: Role; user: string }) {
   const [requests, setRequests] = useState<PurchaseRequest[]>(() =>
     readStoredList<PurchaseRequest>(purchaseRequestsStorageKey));
   const [orders, setOrders] = useState<PurchaseOrder[]>(() =>
@@ -66,8 +67,8 @@ export default function PurchasingPage({ role, user }: { role: RoleName; user: s
   const [comparatorModal, setComparatorModal] = useState<PurchaseRequest | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
-  const canApprove = role === "Administrador" || role === "PM Proyecto";
-  const canQuote = role === "Administrador" || role === "Compras";
+  const canApprove = can(role, "purchase.approve");
+  const canQuote = can(role, "purchase.quote");
 
   const addSupplier = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

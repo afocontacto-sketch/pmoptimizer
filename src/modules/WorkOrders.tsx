@@ -1,3 +1,5 @@
+import { can } from "../app/permissions";
+import type { Role } from "../app/roles";
 import { keys } from "../data/keys";
 import { nextDocNumber, orderTypeSeries } from "../data/docNumbering";
 import { demoContract } from "../data/contracts";
@@ -54,7 +56,6 @@ import type { PurchaseOrder } from "./supplyData";
 import { getEmployeeHourlyRate, readHrEmployees } from "./HumanResourcesPage";
 import { readEquipmentMaster } from "./masterData";
 
-type RoleName = "Administrador" | "Supervisor" | "Planificador" | "PM Proyecto" | "Compras" | "Contabilidad" | "Producción" | "Industrial" | "Ingeniería" | "Calidad";
 
 type ReservedPick = { binId: string; code: string; quantity: number };
 type StockMovementType =
@@ -346,7 +347,7 @@ export default function WorkOrders({
   scope = "operations",
 }: {
   user: string;
-  role: RoleName;
+  role: Role;
   defaultTab?: number;
   scope?: "operations" | "warehouse" | "quality" | "team";
 }) {
@@ -450,13 +451,18 @@ export default function WorkOrders({
   });
 
   const isSupervisor = role === "Supervisor";
-  const canCloseOrders = role === "Administrador";
-  const canOperate = ["Administrador", "Producción", "Industrial", "Ingeniería"].includes(role);
-  const canInspect = role === "Administrador" || role === "Calidad";
-  const canReceive = role === "Administrador" || role === "Compras";
-  const canPutaway = ["Administrador", "Compras", "Producción", "Industrial"].includes(role);
-  const canCount = ["Administrador", "Compras", "Producción", "Industrial"].includes(role);
-  const canChangePicking = ["Administrador", "Producción", "Industrial"].includes(role);
+  const canCloseOrders = can(role, "order.close");
+  const canReopenOrders = can(role, "order.reopen");
+  const canCreate = can(role, "order.create");
+  const canOperate = can(role, "order.operate");
+  const canInspect = can(role, "quality.inspect");
+  const canReceive = can(role, "warehouse.receivePO");
+  const canPutaway = can(role, "warehouse.putaway");
+  const canTransfer = can(role, "warehouse.transfer");
+  const canImportStock = can(role, "warehouse.import");
+  const canRelease = can(role, "quality.releaseStock");
+  const canCount = can(role, "warehouse.count");
+  const canChangePicking = can(role, "warehouse.pick");
   const currentContract = contracts.find((contract) => contract.code === newOrder.contract) ?? contracts[0];
   const selectedRoute = routes.find((route) => route.id === newOrder.routeId);
   const selectedPlan = plans.find((plan) => plan.id === newOrder.planId);
@@ -542,7 +548,7 @@ export default function WorkOrders({
       ? tabDefinitions.filter((item) => item.index === 4)
       : scope === "team"
         ? tabDefinitions.filter((item) => role === "Supervisor" && item.index === 6)
-        : tabDefinitions.filter((item) => item.index === 0 || (role !== "Supervisor" && (item.index === 1 || item.index === 5)));
+        : tabDefinitions.filter((item) => item.index === 0 || (role !== "Supervisor" && role !== "Técnico" && (item.index === 1 || item.index === 5)));
   const supervisorOrdersPanel = (
     <Paper sx={{ p: 3 }}>
       <Typography variant="h6" sx={{ mb: 2 }}>Órdenes de trabajo del equipo</Typography>
@@ -640,7 +646,7 @@ export default function WorkOrders({
 
   const createOrder = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canOperate) {
+    if (!canCreate) {
       setError("Tu rol no tiene permiso para crear órdenes de trabajo.");
       return;
     }
@@ -711,7 +717,7 @@ export default function WorkOrders({
   };
 
   const createOrderFromCall = (call: PlannedCallRecord) => {
-    if (!canOperate) {
+    if (!canCreate) {
       setError("Tu rol no tiene permiso para crear OT desde llamadas de mantenimiento.");
       return;
     }
@@ -859,8 +865,8 @@ export default function WorkOrders({
   };
 
   const reopenOrder = (orderId: string, reason: string) => {
-    if (!isSupervisor) {
-      setError("Solo Supervisor puede reabrir una OT cerrada.");
+    if (!canReopenOrders) {
+      setError("Solo Supervisor o Administrador puede reabrir una OT cerrada.");
       return;
     }
     if (!reason.trim()) {
@@ -990,7 +996,7 @@ export default function WorkOrders({
   };
 
   const preparePicking = (order: WorkOrder) => {
-    if (!["Administrador", "Supervisor", "Producción", "Industrial"].includes(role)) {
+    if (!canChangePicking) {
       setError("Tu rol no tiene permiso para preparar picking.");
       return;
     }
@@ -1035,7 +1041,7 @@ export default function WorkOrders({
   };
 
   const confirmConsumption = (order: WorkOrder) => {
-    if (!["Administrador", "Supervisor", "Producción", "Industrial"].includes(role)) {
+    if (!canChangePicking) {
       setError("Tu rol no tiene permiso para confirmar el consumo de materiales.");
       return;
     }
@@ -1114,7 +1120,7 @@ export default function WorkOrders({
   const receivePurchase = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!canReceive) {
-      setError("Solo Compras o Administrador puede registrar recepciones desde OC.");
+      setError("Solo Almacén, Compras o Administrador puede registrar recepciones desde OC.");
       return;
     }
     const quantity = Number(receipt.quantity);
@@ -1199,7 +1205,7 @@ export default function WorkOrders({
   };
 
   const releasePicking = (order: WorkOrder) => {
-    if (!["Administrador", "Supervisor", "Producción", "Industrial"].includes(role)) {
+    if (!canChangePicking) {
       setError("Tu rol no tiene permiso para liberar reservas de picking.");
       return;
     }
@@ -1309,7 +1315,7 @@ export default function WorkOrders({
 
   const performTransfer = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!canPutaway) {
+    if (!canTransfer) {
       setError("Tu rol no tiene permiso para trasladar stock.");
       return;
     }
@@ -1501,7 +1507,7 @@ export default function WorkOrders({
         </Tabs>
       </Paper>
 
-      {tab === 0 && canOperate && (
+      {tab === 0 && canCreate && (
         <Stack spacing={3}>
           <Paper sx={{ p: 3 }}>
             <Typography variant="h6">Llamadas de planes de mantenimiento</Typography>
@@ -2007,7 +2013,7 @@ export default function WorkOrders({
                 </TextField>
                 <Button type="submit" variant="contained" disabled={!canReceive || !selectedTransitLine}>Registrar recepción</Button>
               </Stack>
-              {!canReceive && <Alert severity="info">La recepción desde OC está habilitada para Compras y Administrador.</Alert>}
+              {!canReceive && <Alert severity="info">La recepción desde OC está habilitada para Almacén, Compras y Administrador.</Alert>}
               <TextField label="Buscar por material, almacén, ubicación, estado u OC" value={stockFilter} onChange={(event) => setStockFilter(event.target.value)} />
               <Table size="small">
                 <TableHead><TableRow><TableCell>Material / lote</TableCell><TableCell>Almacén / ubicación</TableCell><TableCell>Estado</TableCell><TableCell align="right">Físico</TableCell><TableCell align="right">Reservado</TableCell><TableCell align="right">Disponible</TableCell>{!isSupervisor && <TableCell align="right">Costo unit.</TableCell>}<TableCell>Acción</TableCell></TableRow></TableHead>
@@ -2021,7 +2027,7 @@ export default function WorkOrders({
                     <TableCell align="right">{bin.status === "Libre utilización" && isPickableLocation(bin.location) ? bin.quantity - bin.reserved : 0} {bin.unit}</TableCell>
                     {!isSupervisor && <TableCell align="right">{money(bin.unitCost)}</TableCell>}
                     <TableCell>
-                      {bin.status === "Bloqueado calidad" && (role === "Calidad" || role === "Administrador")
+                      {bin.status === "Bloqueado calidad" && canRelease
                         ? <Button size="small" onClick={() => bin.sourceBins.forEach((sourceBin) => releaseQualityStock(sourceBin.id))}>Liberar QC</Button>
                         : bin.status === "Libre utilización" && bin.location === "REC-UBICAR" && canPutaway
                           ? <Stack direction="row" spacing={1}><TextField size="small" label="Ubicación" value={putawayLocations[bin.id] ?? ""} onChange={(event) => setPutawayLocations((current) => ({ ...current, [bin.id]: event.target.value }))} /><Button size="small" onClick={() => putawayStockGroup(bin)}>Ubicar</Button></Stack>
@@ -2050,7 +2056,7 @@ export default function WorkOrders({
                 </TextField>
                 <TextField label="Cantidad contada" type="number" value={cycleCount.countedQuantity} onChange={(event) => setCycleCount((current) => ({ ...current, countedQuantity: event.target.value }))} slotProps={{ htmlInput: { min: 0, step: 1 } }} />
                 <Button type="submit" variant="contained" disabled={!canCount}>Aplicar conteo</Button>
-                {role === "Administrador" && <Button component="label" variant="outlined">
+                {canImportStock && <Button component="label" variant="outlined">
                   Importar saldos CSV
                   <input hidden type="file" accept=".csv,text/csv" onChange={importWarehouseCsv} />
                 </Button>}
@@ -2058,7 +2064,7 @@ export default function WorkOrders({
               <Divider />
               <Typography variant="h6">Traslado entre almacenes</Typography>
               <Stack component="form" direction={{ xs: "column", md: "row" }} spacing={1} onSubmit={performTransfer}>
-                <TextField select label="Stock origen" value={transfer.binId || transferableBins[0]?.id || ""} onChange={(event) => setTransfer((current) => ({ ...current, binId: event.target.value }))} disabled={!canPutaway || transferableBins.length === 0} sx={{ minWidth: 300 }}>
+                <TextField select label="Stock origen" value={transfer.binId || transferableBins[0]?.id || ""} onChange={(event) => setTransfer((current) => ({ ...current, binId: event.target.value }))} disabled={!canTransfer || transferableBins.length === 0} sx={{ minWidth: 300 }}>
                   {transferableBins.map((bin) => <MenuItem key={bin.id} value={bin.id}>{bin.code} · {bin.warehouse}/{bin.location} · libre {bin.quantity - bin.reserved}</MenuItem>)}
                 </TextField>
                 <TextField label="Cantidad" type="number" value={transfer.quantity} onChange={(event) => setTransfer((current) => ({ ...current, quantity: event.target.value }))} slotProps={{ htmlInput: { min: 1, step: 1 } }} />
@@ -2069,7 +2075,7 @@ export default function WorkOrders({
                   <TextField label="Almacén destino" value={transfer.warehouse} onChange={(event) => setTransfer((current) => ({ ...current, warehouse: event.target.value }))} />
                   <TextField label="Ubicación destino" value={transfer.location} onChange={(event) => setTransfer((current) => ({ ...current, location: event.target.value }))} />
                 </>}
-                <Button type="submit" variant="contained" disabled={!canPutaway}>Trasladar</Button>
+                <Button type="submit" variant="contained" disabled={!canTransfer}>Trasladar</Button>
               </Stack>
             </Stack>
           </Paper>
