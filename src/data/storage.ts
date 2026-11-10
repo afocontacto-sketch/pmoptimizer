@@ -1,3 +1,4 @@
+import { seedDemoData } from "./demoData";
 import { APP_PREFIX, SCHEMA, schemaKey } from "./keys";
 
 export const STORE_EVENT = "pmo-store";
@@ -44,7 +45,7 @@ export function bootstrapStorage(): void {
     }
     stale.forEach((key) => localStorage.removeItem(key));
     localStorage.setItem(schemaKey, SCHEMA);
-    // E0.1: el seed demo aún no escribe nada (los módulos usan sus datos demo por defecto).
+    seedDemoData();
   } catch (error) {
     console.warn("No se pudo inicializar el almacenamiento local.", error);
   }

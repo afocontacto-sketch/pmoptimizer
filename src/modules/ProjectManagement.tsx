@@ -15,17 +15,11 @@ import {
   Typography,
 } from "@mui/material";
 import { Link } from "react-router-dom";
-import { maintenanceCallsStorageKey, routeStorageKey } from "./maintenanceData";
+import { readPlannedCalls, routeStorageKey } from "./maintenanceData";
 import type { RouteTemplate } from "./maintenanceData";
 import { purchaseOrdersStorageKey, readStoredList } from "./supplyData";
 import type { PurchaseOrder } from "./supplyData";
 
-type PlannedCall = {
-  id: string;
-  plan: { name: string; equipmentId: string; contract: string; wbs: string };
-  routeId: string;
-  dueDate: string;
-};
 type WorkOrder = {
   id: string;
   plannedCallId?: string;
@@ -52,7 +46,7 @@ const workOrdersStorageKey = keys.workOrders;
 const demoStock: StockBin[] = [
   { code: "MAT-114", status: "Libre utilización", quantity: 9 },
   { code: "MAT-114", status: "Bloqueado calidad", quantity: 5 },
-  { code: "MAT-114", status: "En tránsito", quantity: 12, reference: "OC-4501" },
+  { code: "MAT-114", status: "En tránsito", quantity: 12, reference: "31000001" },
   { code: "MAT-422", status: "Libre utilización", quantity: 54 },
   { code: "MAT-301", status: "Libre utilización", quantity: 18 },
 ];
@@ -67,7 +61,7 @@ function formatDate(value: string): string {
 }
 
 export default function ProjectManagement({ role = "Supervisor" }: { role?: string }) {
-  const [calls] = useState(() => readStoredList<PlannedCall>(maintenanceCallsStorageKey));
+  const [calls] = useState(() => readPlannedCalls());
   const [routes] = useState(() => readStoredList<RouteTemplate>(routeStorageKey));
   const [orders] = useState(() => readStoredList<WorkOrder>(workOrdersStorageKey));
   const [stock] = useState(() => {

@@ -93,6 +93,7 @@ type EmployeeLeave = {
 const demoEmployees: Employee[] = [
   { id: "EMP-001", name: "Camila Rojas", position: "Técnica mecánica", contractType: "Indefinido", monthlySalary: 1100000, hoursPerMonth: 180, deductionPercent: 20, direct: true, contractCode: "CT1234", contractCodes: ["CT1234"], supervisorId: "EMP-002", login: "tecnico" },
   { id: "EMP-002", name: "Diego Muñoz", position: "Supervisor de mantenimiento", contractType: "Indefinido", monthlySalary: 1450000, hoursPerMonth: 180, deductionPercent: 20, direct: false, contractCode: "", contractCodes: ["CT1234"], supervisorLogin: "supervisor" },
+  { id: "EMP-004", name: "Tomás Vera", position: "Técnico eléctrico", contractType: "Indefinido", monthlySalary: 1050000, hoursPerMonth: 180, deductionPercent: 20, direct: true, contractCode: "CT1234", contractCodes: ["CT1234"], supervisorId: "EMP-002", login: "tecnico2" },
   { id: "EMP-003", name: "Paula Soto", position: "Administración", contractType: "Indefinido", monthlySalary: 1250000, hoursPerMonth: 180, deductionPercent: 20, direct: false, contractCode: "", contractCodes: ["CT1234"] },
 ];
 const demoContracts: ProjectContract[] = [{ code: "CT1234", client: "Fiat Chile", active: true }];

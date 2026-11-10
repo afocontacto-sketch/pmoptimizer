@@ -256,7 +256,7 @@ const metricCards = [
 ];
 
 const tasks = [
-  "Revisar OT-2048 en Planta Norte",
+  "Revisar OT 51000001 en Planta Norte",
   "Ajustar stock de repuestos de freno",
   "Enviar informe mensual a cliente Minera Sur",
   "Validar cotización de mantenimiento industrial",

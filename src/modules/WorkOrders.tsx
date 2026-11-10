@@ -1,5 +1,10 @@
 import { keys } from "../data/keys";
 import { nextDocNumber, orderTypeSeries } from "../data/docNumbering";
+import { demoContract } from "../data/contracts";
+import type { Contract } from "../data/contracts";
+import type { StockBin, StockStatus } from "../data/stock";
+import { entryDurationHours, readTimeEntries, typeLabels } from "../data/workOrders";
+import type { OrderLine, OrderStatus, OrderType, TimeEntry, WorkOrder as BaseWorkOrder } from "../data/workOrders";
 import { useEffect, useMemo, useState } from "react";
 import type { ChangeEvent, FormEvent } from "react";
 import {
@@ -30,7 +35,7 @@ import {
 } from "@mui/material";
 import { Add, Download, PlayArrow, Stop } from "@mui/icons-material";
 import {
-  maintenanceCallsStorageKey,
+  plannedCallRecords,
   planStorageKey,
   routeStorageKey,
   samplePlans,
@@ -38,7 +43,7 @@ import {
 } from "./maintenanceData";
 import type {
   MaintenancePlan,
-  RouteOperation,
+  PlannedCallRecord,
   RouteTemplate,
 } from "./maintenanceData";
 import {
@@ -49,32 +54,8 @@ import type { PurchaseOrder } from "./supplyData";
 import { getEmployeeHourlyRate, readHrEmployees } from "./HumanResourcesPage";
 import { readEquipmentMaster } from "./masterData";
 
-type OrderType = "PRE" | "OVH" | "COR" | "REP" | "ESPERA";
-type OrderStatus = "Asignada" | "En ejecución" | "Cierre provisorio" | "Cerrada";
-type StockStatus = "Libre utilización" | "Bloqueado calidad" | "En tránsito";
 type RoleName = "Administrador" | "Supervisor" | "Planificador" | "PM Proyecto" | "Compras" | "Contabilidad" | "Producción" | "Industrial" | "Ingeniería" | "Calidad";
 
-type WbsElement = {
-  code: string;
-  type: OrderType;
-  description: string;
-  budget: number;
-};
-
-type Contract = {
-  code: string;
-  customer: string;
-  description: string;
-  wbs: WbsElement[];
-};
-
-type OrderMaterial = {
-  code: string;
-  quantity: number;
-  unitCost?: number;
-  name?: string;
-  unit?: string;
-};
 type ReservedPick = { binId: string; code: string; quantity: number };
 type StockMovementType =
   | "Recepción OC"
@@ -98,82 +79,19 @@ type StockMovement = {
   user: string;
 };
 
-type StatusChangeRecord = {
-  date: string;
-  previousStatus: OrderStatus;
-  newStatus: OrderStatus;
-  user: string;
-  reason?: string;
-};
-
-type WorkOrder = {
-  id: string;
-  contract: string;
-  wbs: string;
-  planId?: string;
-  plannedCallId?: string;
-  routeId?: string;
-  routeName?: string;
-  routeOperations?: RouteOperation[];
-  type: OrderType;
-  equipment: string;
-  description: string;
-  technician: string;
+// Campos de ejecución que el modelo de data/ aún no define (cronómetro y reservas de picking); se completan al leer.
+type RuntimeFields = {
   hourlyRate: number;
-  projectedHours: number;
-  projectedLaborCost?: number;
   elapsedSeconds: number;
   timerStartedAt: number | null;
-  status: OrderStatus;
-  requiredMaterials: OrderMaterial[];
-  consumedMaterials: OrderMaterial[];
   reservedPicks?: ReservedPick[];
-  qualityChecklist?: Record<string, boolean>;
-  qualityApproved?: boolean;
-  qualityApprovedBy?: string | null;
   supervisorClosedBy: string | null;
-  closedAt?: string;
-  closedBy?: string;
-  statusHistory?: StatusChangeRecord[];
 };
-
-type StockBin = {
-  id: string;
-  code: string;
-  name: string;
-  warehouse: string;
-  location: string;
-  status: StockStatus;
-  quantity: number;
-  reserved: number;
-  unit: string;
-  unitCost: number;
-  reference?: string;
-};
+type WorkOrder = BaseWorkOrder & RuntimeFields;
 
 type StockBinGroup = StockBin & {
   sourceBins: StockBin[];
 };
-
-type PlannedCallRecord = {
-  id: string;
-  plan: MaintenancePlan;
-  routeId: string;
-  dueDate: string;
-};
-
-const demoContracts: Contract[] = [{
-  code: "CT1234",
-  customer: "Fiat Chile",
-  description: "Contrato ficticio de mantenimiento de flota",
-  wbs: [
-    { code: "CT1234-CL-B2N4-PRE", type: "PRE", description: "Mantenimiento preventivo", budget: 2500000 },
-    { code: "CT1234-CL-B2N4-OVH", type: "OVH", description: "Overhaul", budget: 8000000 },
-    { code: "CT1234-CL-B2N4-COR", type: "COR", description: "Correctivo", budget: 3500000 },
-    { code: "CT1234-CL-B2N4-REP", type: "REP", description: "Reparaciones", budget: 2000000 },
-    { code: "CT1234-CL-B2N4-IND", type: "ESPERA", description: "Tiempo improductivo", budget: 0 },
-  ],
-}];
 
 function readContracts(): Contract[] {
   const savedClients = readStoredList<{ name: string; contractCode?: string; wbs?: string[] }>(keys.clients);
@@ -181,7 +99,7 @@ function readContracts(): Contract[] {
     if (!client.contractCode) return [];
     const wbs = (client.wbs ?? []).map((code) => {
       const suffix = code.split("-").pop()?.toUpperCase();
-      const type: OrderType = suffix === "OVH" || suffix === "COR" || suffix === "REP" || suffix === "ESPERA"
+      const type: OrderType = suffix === "OVH" || suffix === "COR" || suffix === "REP" || suffix === "GAR" || suffix === "ESPERA"
         ? suffix
         : "PRE";
       return { code, type, description: `${client.contractCode} · ${type}`, budget: 0 };
@@ -194,8 +112,22 @@ function readContracts(): Contract[] {
     }];
   });
   return [...new Map<string, Contract>(
-    [...demoContracts, ...configured].map((contract): [string, Contract] => [contract.code, contract]),
+    [demoContract, ...configured.filter((contract) => contract.code !== demoContract.code)].map((contract): [string, Contract] => [contract.code, contract]),
   ).values()];
+}
+
+function withRuntimeFields(order: BaseWorkOrder & Partial<RuntimeFields>, entries: TimeEntry[]): WorkOrder {
+  const own = entries.filter((entry) => entry.orderId === order.id);
+  const closedSeconds = own.filter((entry) => entry.end).reduce((sum, entry) => sum + entryDurationHours(entry, 0) * 3600, 0);
+  return {
+    ...order,
+    assignees: order.assignees ?? [],
+    materials: order.materials ?? [],
+    hourlyRate: order.hourlyRate ?? own[0]?.hourlyRate ?? getEmployeeHourlyRate(order.assignees?.[0]?.name ?? "", 0),
+    elapsedSeconds: order.elapsedSeconds ?? Math.round(closedSeconds),
+    timerStartedAt: order.timerStartedAt ?? null,
+    supervisorClosedBy: order.supervisorClosedBy ?? null,
+  };
 }
 
 function readTechnicianProfiles() {
@@ -207,117 +139,12 @@ function readTechnicianProfiles() {
   return profiles.length ? profiles : [{ name: "Sin técnico directo", rate: 0, supervisor: "Supervisor" }];
 }
 
-const initialOrders: WorkOrder[] = [
-  {
-    id: "OT-2048",
-    contract: "CT1234",
-    wbs: "CT1234-CL-B2N4-PRE",
-    type: "PRE",
-    equipment: "VEH-001 · Camioneta Fiat Ducato",
-    description: "Preventivo de 10.000 km · originada por plan PM-VEH-001",
-    planId: "PL-VEH-001",
-    routeId: "HR-VEH-001",
-    routeName: "Mantención preventiva vehículo",
-    routeOperations: sampleRoutes[0].operations,
-    technician: "Camila Rojas",
-    hourlyRate: 18000,
-    projectedHours: 3.5,
-    elapsedSeconds: 0,
-    timerStartedAt: null,
-    status: "Asignada",
-    requiredMaterials: [{ code: "MAT-114", quantity: 1 }, { code: "MAT-422", quantity: 1 }],
-    consumedMaterials: [],
-    reservedPicks: [],
-    qualityChecklist: {},
-    qualityApproved: false,
-    qualityApprovedBy: null,
-    supervisorClosedBy: null,
-  },
-  {
-    id: "OT-2049",
-    contract: "CT1234",
-    wbs: "CT1234-CL-B2N4-COR",
-    type: "COR",
-    equipment: "VEH-002 · Fiat Fiorino",
-    description: "Reparación sistema de frenos",
-    technician: "Diego Muñoz",
-    hourlyRate: 20500,
-    projectedHours: 5,
-    elapsedSeconds: 8100,
-    timerStartedAt: null,
-    status: "Cierre provisorio",
-    requiredMaterials: [{ code: "MAT-422", quantity: 2 }],
-    consumedMaterials: [{ code: "MAT-422", quantity: 1 }],
-    reservedPicks: [],
-    qualityChecklist: {},
-    qualityApproved: false,
-    qualityApprovedBy: null,
-    supervisorClosedBy: null,
-  },
-  {
-    id: "OT-2050",
-    contract: "CT1234",
-    wbs: "CT1234-CL-B2N4-OVH",
-    type: "OVH",
-    equipment: "VEH-003 · Fiat Ducato",
-    description: "Overhaul de conjunto de transmisión",
-    technician: "Camila Rojas",
-    hourlyRate: 18000,
-    projectedHours: 16,
-    elapsedSeconds: 0,
-    timerStartedAt: null,
-    status: "Asignada",
-    requiredMaterials: [{ code: "MAT-301", quantity: 1 }],
-    consumedMaterials: [],
-    reservedPicks: [],
-    qualityChecklist: {},
-    qualityApproved: false,
-    qualityApprovedBy: null,
-    supervisorClosedBy: null,
-  },
-  {
-    id: "OT-ESPERA-01",
-    contract: "CT1234",
-    wbs: "CT1234-CL-B2N4-IND",
-    type: "ESPERA",
-    equipment: "Centro de trabajo · Taller",
-    description: "Orden de espera para registrar tiempo no productivo",
-    technician: "Camila Rojas",
-    hourlyRate: 18000,
-    projectedHours: 0,
-    elapsedSeconds: 0,
-    timerStartedAt: null,
-    status: "Asignada",
-    requiredMaterials: [],
-    consumedMaterials: [],
-    reservedPicks: [],
-    qualityChecklist: {},
-    qualityApproved: false,
-    qualityApprovedBy: null,
-    supervisorClosedBy: null,
-  },
-];
-
-const initialStock: StockBin[] = [
-  { id: "BIN-01", code: "MAT-114", name: "Cinta aislante 3M", warehouse: "Bodega Central", location: "A-01-02", status: "Libre utilización", quantity: 9, reserved: 0, unit: "rollo", unitCost: 3500 },
-  { id: "BIN-02", code: "MAT-114", name: "Cinta aislante 3M", warehouse: "Bodega Central", location: "A-02-01", status: "Bloqueado calidad", quantity: 5, reserved: 0, unit: "rollo", unitCost: 3500 },
-  { id: "BIN-03", code: "MAT-114", name: "Cinta aislante 3M", warehouse: "Recepciones", location: "TRANSITO", status: "En tránsito", quantity: 12, reserved: 0, unit: "rollo", unitCost: 3500, reference: "OC-4501" },
-  { id: "BIN-04", code: "MAT-422", name: "Rodamiento SKF 6205", warehouse: "Bodega Central", location: "B-01-01", status: "Libre utilización", quantity: 42, reserved: 0, unit: "unidad", unitCost: 7800 },
-  { id: "BIN-05", code: "MAT-301", name: "Motor eléctrico 7.5HP", warehouse: "Bodega Central", location: "C-01-03", status: "Libre utilización", quantity: 18, reserved: 0, unit: "unidad", unitCost: 285000 },
-  { id: "BIN-06", code: "MAT-422", name: "Rodamiento SKF 6205", warehouse: "Bodega Taller", location: "B-02-01", status: "Libre utilización", quantity: 12, reserved: 0, unit: "unidad", unitCost: 7800 },
-  { id: "BIN-07", code: "MAT-422", name: "Rodamiento SKF 6205", warehouse: "Recepciones", location: "TRANSITO", status: "En tránsito", quantity: 8, reserved: 0, unit: "unidad", unitCost: 7800, reference: "OC-4502" },
-];
+const initialOrders: BaseWorkOrder[] = [];
+const initialStock: StockBin[] = [];
 
 const ordersStorageKey = keys.workOrders;
 const stockStorageKey = keys.warehouseBins;
 const stockMovementStorageKey = keys.warehouseMovements;
-const typeLabels: Record<OrderType, string> = {
-  PRE: "Preventivo",
-  OVH: "Overhaul",
-  COR: "Correctivo",
-  REP: "Reparaciones",
-  ESPERA: "Espera / no productiva",
-};
 const qualityCheckItems = [
   "Trabajo ejecutado según hoja de ruta",
   "Materiales utilizados corresponden a la OT",
@@ -370,8 +197,8 @@ function durationLabel(seconds: number): string {
   return `${Math.floor(totalMinutes / 60)} h ${String(totalMinutes % 60).padStart(2, "0")} min`;
 }
 
-function materialsForRoute(route: RouteTemplate): OrderMaterial[] {
-  const grouped = new Map<string, OrderMaterial>();
+function materialsForRoute(route: RouteTemplate): OrderLine[] {
+  const grouped = new Map<string, OrderLine>();
   for (const operation of route.operations) {
     for (const material of operation.materials) {
       const current = grouped.get(material.code);
@@ -379,16 +206,17 @@ function materialsForRoute(route: RouteTemplate): OrderMaterial[] {
         grouped.set(material.code, {
           code: material.code,
           name: material.name,
-          quantity: material.quantity,
+          required: material.quantity,
+          picked: 0,
           unit: material.unit,
-          unitCost: material.unitCost,
+          unitCostAvg: material.unitCost,
         });
         continue;
       }
-      const totalQuantity = current.quantity + material.quantity;
-      current.unitCost = ((current.unitCost ?? 0) * current.quantity + material.unitCost * material.quantity)
+      const totalQuantity = current.required + material.quantity;
+      current.unitCostAvg = ((current.unitCostAvg ?? 0) * current.required + material.unitCost * material.quantity)
         / totalQuantity;
-      current.quantity = totalQuantity;
+      current.required = totalQuantity;
     }
   }
   return [...grouped.values()];
@@ -402,8 +230,8 @@ function plannedLaborCost(order: WorkOrder): number {
   return order.projectedLaborCost ?? order.projectedHours * order.hourlyRate;
 }
 
-function plannedMaterialCost(item: OrderMaterial, fallbackUnitCost: number): number {
-  return item.quantity * (item.unitCost ?? fallbackUnitCost);
+function plannedMaterialCost(item: OrderLine, fallbackUnitCost: number): number {
+  return item.required * (item.unitCostAvg ?? fallbackUnitCost);
 }
 
 function csvCell(value: string | number): string {
@@ -496,12 +324,12 @@ function downloadCsvRows(filename: string, headers: (string | number)[], rows: (
 }
 
 function allocatedCost(order: WorkOrder, stock: StockBin[], elapsedSeconds = order.elapsedSeconds): number {
-  const materialCost = order.consumedMaterials.reduce((sum, item) => {
+  const materialCost = order.materials.reduce((sum, item) => {
     const weightedBins = stock.filter((candidate) => candidate.code === item.code && candidate.quantity > 0);
     const totalQuantity = weightedBins.reduce((total, bin) => total + bin.quantity, 0);
     const averageCost = weightedBins.reduce((total, bin) => total + bin.quantity * bin.unitCost, 0)
       / Math.max(1, totalQuantity);
-    return sum + item.quantity * (item.unitCost ?? averageCost);
+    return sum + item.picked * (item.unitCostAvg ?? averageCost);
   }, 0);
   return elapsedSeconds / 3600 * order.hourlyRate + materialCost;
 }
@@ -523,7 +351,7 @@ export default function WorkOrders({
   scope?: "operations" | "warehouse" | "quality" | "team";
 }) {
   const [orders, setOrders] = useState<WorkOrder[]>(() =>
-    readList<WorkOrder>(ordersStorageKey, initialOrders).map((order) =>
+    readList<BaseWorkOrder & Partial<RuntimeFields>>(ordersStorageKey, initialOrders).map((order) => withRuntimeFields(order, readTimeEntries())).map((order) =>
       order.type === "ESPERA" && !order.wbs
         ? { ...order, wbs: "CT1234-CL-B2N4-IND" }
         : order,
@@ -535,9 +363,7 @@ export default function WorkOrders({
   const [plans] = useState<MaintenancePlan[]>(() =>
     readList<MaintenancePlan>(planStorageKey, samplePlans),
   );
-  const [plannedCalls] = useState<PlannedCallRecord[]>(() =>
-    readList<PlannedCallRecord>(maintenanceCallsStorageKey, []),
-  );
+  const [plannedCalls] = useState<PlannedCallRecord[]>(() => plannedCallRecords(plans, routes));
   const [stock, setStock] = useState<StockBin[]>(() =>
     addApprovedPurchaseOrdersToTransit(readList<StockBin>(stockStorageKey, initialStock)).map((bin) =>
       bin.status === "En tránsito"
@@ -545,7 +371,7 @@ export default function WorkOrders({
           ...bin,
           warehouse: "Recepciones",
           location: "TRANSITO",
-          reference: bin.reference ?? (bin.code === "MAT-114" ? "OC-4501" : "OC-4502"),
+          reference: bin.reference ?? "",
         }
         : bin,
     ),
@@ -560,7 +386,7 @@ export default function WorkOrders({
   const [elapsedNow, setElapsedNow] = useState(Date.now());
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
-  const [receipt, setReceipt] = useState({ code: "MAT-114", purchaseOrder: "OC-4501", quantity: "1", qualityHold: true });
+  const [receipt, setReceipt] = useState({ code: "MAT-114", purchaseOrder: "", quantity: "1", qualityHold: true });
   const [stockFilter, setStockFilter] = useState("");
   const [putawayLocations, setPutawayLocations] = useState<Record<string, string>>({});
   const [cycleCount, setCycleCount] = useState({ binId: "", countedQuantity: "" });
@@ -611,7 +437,7 @@ export default function WorkOrders({
     employee.direct && technicianProfiles.some((technician) => technician.name === employee.name));
   const supervisorTeamNames = new Set(supervisorTeam.map((employee) => employee.name));
   const supervisorCanSeeOrder = (order: WorkOrder) => role !== "Supervisor" ||
-    supervisorTeamNames.has(order.technician) ||
+    supervisorTeamNames.has(order.assignees[0]?.name ?? "") ||
     teamContractCodes.has(order.contract);
   const [newOrder, setNewOrder] = useState({
     type: "PRE" as OrderType,
@@ -653,10 +479,9 @@ export default function WorkOrders({
     const linked = visibleOrders.filter((order) => order.wbs === element.code);
     const actual = linked.reduce((sum, order) => sum + allocatedCost(order, stock, order.currentSeconds), 0);
     const committed = linked.filter((order) => order.status !== "Cerrada").reduce((sum, order) => {
-      const required = order.requiredMaterials.reduce((materialSum, item) => {
-        const alreadyConsumed = order.consumedMaterials.find((consumed) => consumed.code === item.code)?.quantity ?? 0;
-        const unitCost = item.unitCost ?? averageUnitCost(item.code);
-        return materialSum + Math.max(0, item.quantity - alreadyConsumed) * unitCost;
+      const required = order.materials.reduce((materialSum, item) => {
+        const unitCost = item.unitCostAvg ?? averageUnitCost(item.code);
+        return materialSum + Math.max(0, item.required - item.picked) * unitCost;
       }, 0);
       const actualHours = order.currentSeconds / 3600;
       const remainingHours = Math.max(0, order.projectedHours - actualHours);
@@ -666,7 +491,7 @@ export default function WorkOrders({
       return sum + required + remainingLabor;
     }, 0);
     const projected = linked.reduce((sum, order) => sum + plannedLaborCost(order) +
-      order.requiredMaterials.reduce((materialSum, item) =>
+      order.materials.reduce((materialSum, item) =>
         materialSum + plannedMaterialCost(item, averageUnitCost(item.code)), 0), 0);
     return { element, actual, committed, projected, linked: linked.length };
   });
@@ -731,11 +556,11 @@ export default function WorkOrders({
               <TableCell>{order.id}<Typography variant="caption" sx={{ display: "block" }}>{order.equipment}</Typography></TableCell>
               <TableCell>{order.description}</TableCell>
               <TableCell><OrderStatusChip status={order.status} /></TableCell>
-              <TableCell>{order.technician || "Sin asignar"}</TableCell>
+              <TableCell>{order.assignees[0]?.name || "Sin asignar"}</TableCell>
               <TableCell>
                 {order.status === "Asignada" && assignableTeam.length > 0 ? (
                   <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-                    <TextField select size="small" label="Trabajador" value={assignmentDrafts[order.id] ?? assignableTeam.find((employee) => employee.name === order.technician)?.id ?? assignableTeam[0].id} onChange={(event) => setAssignmentDrafts((current) => ({ ...current, [order.id]: event.target.value }))}>
+                    <TextField select size="small" label="Trabajador" value={assignmentDrafts[order.id] ?? assignableTeam.find((employee) => employee.name === order.assignees[0]?.name)?.id ?? assignableTeam[0].id} onChange={(event) => setAssignmentDrafts((current) => ({ ...current, [order.id]: event.target.value }))}>
                       {assignableTeam.map((employee) => <MenuItem key={employee.id} value={employee.id}>{employee.name}</MenuItem>)}
                     </TextField>
                     <Button size="small" variant="contained" onClick={() => assignOrderToTeamMember(order)}>Asignar</Button>
@@ -793,7 +618,7 @@ export default function WorkOrders({
     }
     updateOrder(order.id, (current) => ({
       ...current,
-      technician: employee.name,
+      assignees: [{ employeeId: employee.id, name: employee.name }],
       hourlyRate: profile.rate,
       projectedLaborCost: profile.rate * current.projectedHours,
     }));
@@ -859,15 +684,21 @@ export default function WorkOrders({
       type: newOrder.type,
       equipment: selectedPlan?.equipmentId || newOrder.equipment.trim(),
       description: `${newOrder.description.trim()}${selectedPlan ? ` · Plan ${selectedPlan.id}` : ""}`,
-      technician: technician?.name ?? "",
+      assignees: technician
+        ? [{ employeeId: employees.find((item) => item.name === technician.name)?.id ?? "", name: technician.name }]
+        : [],
       hourlyRate: technician?.rate ?? 0,
       projectedHours,
       projectedLaborCost: route ? routeLaborCost(route) : 0,
       elapsedSeconds: 0,
       timerStartedAt: null,
       status: "Asignada",
-      requiredMaterials: route ? materialsForRoute(route) : [],
-      consumedMaterials: [],
+      materials: route ? materialsForRoute(route) : [],
+      pickingStatus: "Sin picking",
+      dueDate: new Date().toISOString().slice(0, 10),
+      statusHistory: [],
+      createdAt: new Date().toISOString(),
+      createdBy: user,
       reservedPicks: [],
       qualityChecklist: {},
       qualityApproved: false,
@@ -915,15 +746,19 @@ export default function WorkOrders({
       type: orderType,
       equipment: call.plan.equipmentId,
       description: `Llamada ${call.id} · ${call.plan.name} · fecha requerida ${call.dueDate.slice(0, 10)}`,
-      technician: "",
+      assignees: [],
       hourlyRate: 0,
       projectedHours: route.operations.reduce((sum, operation) => sum + operation.durationHours, 0),
       projectedLaborCost: routeLaborCost(route),
       elapsedSeconds: 0,
       timerStartedAt: null,
       status: "Asignada",
-      requiredMaterials: materialsForRoute(route),
-      consumedMaterials: [],
+      materials: materialsForRoute(route),
+      pickingStatus: "Sin picking",
+      dueDate: call.dueDate.slice(0, 10),
+      statusHistory: [],
+      createdAt: new Date().toISOString(),
+      createdBy: user,
       reservedPicks: [],
       qualityChecklist: {},
       qualityApproved: false,
@@ -1096,11 +931,11 @@ export default function WorkOrders({
   };
 
   const sortedPickList = (order: WorkOrder) => {
-    const remaining = order.requiredMaterials.map((item) => ({
+    const remaining = order.materials.map((item) => ({
       ...item,
       quantity: Math.max(0,
-        item.quantity
-        - (order.consumedMaterials.find((consumed) => consumed.code === item.code)?.quantity ?? 0)
+        item.required
+        - item.picked
         - (order.reservedPicks ?? []).filter((pick) => pick.code === item.code).reduce((sum, pick) => sum + pick.quantity, 0),
       ),
     })).filter((item) => item.quantity > 0);
@@ -1124,9 +959,8 @@ export default function WorkOrders({
   };
   const selectedWarehouseOrder = availableOrders.find((order) => order.id === selectedWarehouseOrderId);
   const warehousePickRows = selectedWarehouseOrder
-    ? selectedWarehouseOrder.requiredMaterials.map((material) => {
-      const consumed = selectedWarehouseOrder.consumedMaterials.find((item) => item.code === material.code)?.quantity ?? 0;
-      const remaining = Math.max(0, material.quantity - consumed);
+    ? selectedWarehouseOrder.materials.map((material) => {
+      const remaining = Math.max(0, material.required - material.picked);
       const reserved = (selectedWarehouseOrder.reservedPicks ?? [])
         .filter((pick) => pick.code === material.code).reduce((sum, pick) => sum + pick.quantity, 0);
       const planned = sortedPickList(selectedWarehouseOrder).picks
@@ -1139,7 +973,7 @@ export default function WorkOrders({
         ...sortedPickList(selectedWarehouseOrder).picks.filter((pick) => pick.bin.code === material.code)
           .map((pick) => `${pick.bin.warehouse}/${pick.bin.location}`),
       ];
-      return { ...material, remaining, reserved, planned, locations: [...new Set(bins)].join(", ") };
+      return { ...material, quantity: material.required, remaining, reserved, planned, locations: [...new Set(bins)].join(", ") };
     }).filter((item) => item.remaining > 0)
     : [];
   const exportPicking = (order: WorkOrder) => {
@@ -1205,11 +1039,9 @@ export default function WorkOrders({
       setError("Tu rol no tiene permiso para confirmar el consumo de materiales.");
       return;
     }
-    const remaining = order.requiredMaterials.map((item) => ({
+    const remaining = order.materials.map((item) => ({
       code: item.code,
-      quantity: Math.max(0,
-        item.quantity - (order.consumedMaterials.find((consumed) => consumed.code === item.code)?.quantity ?? 0),
-      ),
+      quantity: Math.max(0, item.required - item.picked),
     })).filter((item) => item.quantity > 0);
     const picks = (order.reservedPicks ?? []).flatMap((pick) => {
       const bin = stock.find((item) => item.id === pick.binId);
@@ -1262,19 +1094,17 @@ export default function WorkOrders({
           / Math.max(1, pickedQuantity);
         return { code: item.code, quantity: takenByCode.get(item.code) ?? 0, unitCost };
       });
-      const combined = [...current.consumedMaterials];
-      for (const item of additions) {
-        if (item.quantity <= 0) continue;
-        const existing = combined.find((consumed) => consumed.code === item.code);
-        if (existing) {
-          const previousQuantity = existing.quantity;
-          existing.unitCost = ((existing.unitCost ?? 0) * previousQuantity + (item.unitCost ?? 0) * item.quantity)
-            / (previousQuantity + item.quantity);
-          existing.quantity += item.quantity;
-        }
-        else combined.push(item);
-      }
-      return { ...current, consumedMaterials: combined, reservedPicks: [] };
+      const materials = current.materials.map((line) => {
+        const taken = additions.find((item) => item.code === line.code);
+        if (!taken || taken.quantity <= 0) return line;
+        const picked = line.picked + taken.quantity;
+        const unitCostAvg = line.picked > 0
+          ? ((line.unitCostAvg ?? 0) * line.picked + taken.unitCost * taken.quantity) / picked
+          : taken.unitCost;
+        return { ...line, picked, unitCostAvg };
+      });
+      const pickingStatus = materials.every((line) => line.picked >= line.required) ? "Picking completo" : "Picking parcial";
+      return { ...current, materials, pickingStatus, reservedPicks: [] };
     });
     setPickingTaken((current) => Object.fromEntries(Object.entries(current).filter(([key]) => !key.startsWith(`${order.id}:`))));
     setMessage(`Cantidades tomadas registradas en ${order.id}; el excedente reservado se liberó y el consumo se cargará al costo de la OT/WBS.`);
@@ -1616,10 +1446,9 @@ export default function WorkOrders({
   const monthlyActual = visibleOrders.reduce((sum, order) =>
     sum + allocatedCost(order, stock, order.currentSeconds), 0);
   const monthlyCommitted = visibleOrders.filter((order) => order.status !== "Cerrada").reduce((sum, order) =>
-    sum + order.requiredMaterials.reduce((materialSum, item) => {
-      const consumed = order.consumedMaterials.find((line) => line.code === item.code)?.quantity ?? 0;
-      const price = item.unitCost ?? averageUnitCost(item.code);
-      return materialSum + Math.max(0, item.quantity - consumed) * price;
+    sum + order.materials.reduce((materialSum, item) => {
+      const price = item.unitCostAvg ?? averageUnitCost(item.code);
+      return materialSum + Math.max(0, item.required - item.picked) * price;
     }, 0) + (order.projectedHours > 0
       ? plannedLaborCost(order) * Math.max(0, order.projectedHours - order.currentSeconds / 3600) / order.projectedHours
       : 0), 0);
@@ -1840,7 +1669,7 @@ export default function WorkOrders({
                     <Typography variant="caption" color="text.secondary">{order.equipment}</Typography>
                     <Typography sx={{ display: "block" }} variant="caption">{order.description}</Typography>
                     {!isSupervisor && order.routeName && <Typography sx={{ display: "block" }} variant="caption" color="primary.main">Ruta {order.routeId} · {order.routeName}</Typography>}
-                    {order.requiredMaterials.length > 0 && <Typography sx={{ display: "block" }} variant="caption" color="text.secondary">Materiales requeridos: {order.requiredMaterials.map((item) => `${item.code} ${item.quantity} ${item.unit ?? ""}`).join(" · ")}</Typography>}
+                    {order.materials.length > 0 && <Typography sx={{ display: "block" }} variant="caption" color="text.secondary">Materiales requeridos: {order.materials.map((item) => `${item.code} ${item.required} ${item.unit ?? ""}`).join(" · ")}</Typography>}
                     {!isSupervisor && order.routeOperations?.map((operation) => (
                       <Typography key={`${order.id}-${operation.order}`} sx={{ display: "block" }} variant="caption" color="text.secondary">
                         {operation.order}. {operation.name} · {operation.durationHours} h
@@ -1854,7 +1683,7 @@ export default function WorkOrders({
                     {!isSupervisor && order.qualityApproved && <Typography variant="caption" color="success.main">Calidad OK · {order.qualityApprovedBy}</Typography>}
                   </TableCell>
                   <TableCell>
-                    {order.technician || "Sin asignar"}
+                    {order.assignees[0]?.name || "Sin asignar"}
                     {!isSupervisor && <Typography sx={{ display: "block" }} variant="caption" color="text.secondary">{money(order.hourlyRate)}/h</Typography>}
                   </TableCell>
                   {!isSupervisor && <><TableCell>{order.projectedHours.toFixed(1)} h / {durationLabel(order.currentSeconds)}</TableCell><TableCell align="right">{money(allocatedCost(order, stock, order.currentSeconds))}</TableCell></>}
@@ -1862,7 +1691,7 @@ export default function WorkOrders({
                     <Stack direction="row" sx={{ flexWrap: "wrap", gap: 1 }}>
                       {isSupervisor && assignableTeam.length > 0 && order.status === "Asignada" && (
                         <>
-                          <TextField select size="small" label="Asignar a" value={assignmentDrafts[order.id] ?? assignableTeam.find((employee) => employee.name === order.technician)?.id ?? assignableTeam[0].id} onChange={(event) => setAssignmentDrafts((current) => ({ ...current, [order.id]: event.target.value }))}>
+                          <TextField select size="small" label="Asignar a" value={assignmentDrafts[order.id] ?? assignableTeam.find((employee) => employee.name === order.assignees[0]?.name)?.id ?? assignableTeam[0].id} onChange={(event) => setAssignmentDrafts((current) => ({ ...current, [order.id]: event.target.value }))}>
                             {assignableTeam.map((employee) => <MenuItem key={employee.id} value={employee.id}>{employee.name}</MenuItem>)}
                           </TextField>
                           <Button size="small" variant="contained" onClick={() => assignOrderToTeamMember(order)}>Asignar</Button>
@@ -1895,7 +1724,7 @@ export default function WorkOrders({
                       <TableCell>{order.id}</TableCell>
                       <TableCell>{order.equipment}<Typography variant="caption" sx={{ display: "block" }}>{order.description}</Typography></TableCell>
                       <TableCell>{order.contract}<Typography variant="caption" sx={{ display: "block" }}>{order.wbs}</Typography></TableCell>
-                      <TableCell>{order.technician}</TableCell>
+                      <TableCell>{order.assignees[0]?.name}</TableCell>
                       <TableCell>{money(allocatedCost(order, stock, order.currentSeconds))}</TableCell>
                       <TableCell>{order.closedBy ?? "—"}</TableCell>
                       <TableCell>{order.closedAt ? new Intl.DateTimeFormat("es-CL", { dateStyle: "short", timeStyle: "short" }).format(new Date(order.closedAt)) : "—"}</TableCell>
@@ -1945,7 +1774,7 @@ export default function WorkOrders({
                 <TableRow key={order.id} sx={{ opacity: 0.6, backgroundColor: "#f5f5f5" }}>
                   <TableCell>{order.id}</TableCell><TableCell>{order.equipment}<Typography variant="caption" sx={{ display: "block" }}>{order.description}</Typography></TableCell>
                   <TableCell>{order.contract}<Typography variant="caption" sx={{ display: "block" }}>{order.wbs}</Typography></TableCell>
-                  <TableCell>{order.technician}</TableCell><TableCell>{money(allocatedCost(order, stock, order.currentSeconds))}</TableCell>
+                  <TableCell>{order.assignees[0]?.name}</TableCell><TableCell>{money(allocatedCost(order, stock, order.currentSeconds))}</TableCell>
                   <TableCell>{order.closedBy ?? "—"}</TableCell>
                   <TableCell>{order.closedAt ? new Intl.DateTimeFormat("es-CL", { dateStyle: "short", timeStyle: "short" }).format(new Date(order.closedAt)) : "—"}</TableCell>
                   <TableCell>
@@ -2123,7 +1952,7 @@ export default function WorkOrders({
                 <TableBody>{availableOrders.map((order) => (
                   <TableRow key={order.id} selected={selectedWarehouseOrder?.id === order.id}>
                     <TableCell>{order.id}</TableCell><TableCell>{order.equipment}<Typography variant="caption" sx={{ display: "block" }}>{order.contract} / {order.wbs}</Typography></TableCell>
-                    <TableCell>{order.requiredMaterials.length} materiales</TableCell><TableCell>{order.reservedPicks?.length ? "Reservado" : "Pendiente"}</TableCell>
+                    <TableCell>{order.materials.length} materiales</TableCell><TableCell>{order.reservedPicks?.length ? "Reservado" : "Pendiente"}</TableCell>
                     <TableCell><Button size="small" onClick={() => setSelectedWarehouseOrderId(order.id)}>Abrir picking</Button></TableCell>
                   </TableRow>
                 ))}</TableBody>

@@ -32,7 +32,7 @@ function buildOrder(partial: OrderSeed, now: string): WorkOrder {
 }
 
 // Genera TODOS los datos demo con numeración nueva; los contadores quedan en el último número usado de cada serie.
-// Solo escribe colecciones del modelo nuevo; no se invoca desde bootstrapStorage hasta que WorkOrders.tsx se adapte.
+// Se invoca desde bootstrapStorage tras un reset de esquema.
 export function seedDemoData(now: Date = new Date()): SeedResult {
   const iso = now.toISOString();
   const today = iso.slice(0, 10);
@@ -107,6 +107,16 @@ export function seedDemoData(now: Date = new Date()): SeedResult {
     lines: [{ code: "MAT-114", name: "Cinta aislante 3M", unit: "rollo", unitCost: 3500, sent: 4 }],
   }];
   const budgets: ApprovedBudget[] = approvedBudgetFromContract(demoContract, iso);
+  // Contrato CT1234 con vigencia y WBS (incluye -GAR); el resto son clientes sin contrato.
+  const clients = [
+    { name: "Comercial Aconcagua" },
+    { name: "Minera Sur Ltda." },
+    { name: "Maderas del Valle" },
+    {
+      name: demoContract.customer, contractCode: demoContract.code, startDate: demoContract.startDate,
+      endDate: demoContract.endDate, wbs: demoContract.wbs.map((element) => element.code),
+    },
+  ];
 
   const writes: [string, unknown][] = [
     [keys.materialMaster, demoMaterials],
@@ -117,6 +127,7 @@ export function seedDemoData(now: Date = new Date()): SeedResult {
     [keys.transferOrders, transfers],
     [keys.purchaseOrders, purchaseOrders],
     [keys.purchaseRequests, purchaseRequests],
+    [keys.clients, clients],
     [keys.approvedBudget, budgets],
     [keys.docCounters, { "51": 1, "61": 1, "71": 1, "81": 1, "13": 1, "21": 1, "31": 2, "32": 1 }],
   ];

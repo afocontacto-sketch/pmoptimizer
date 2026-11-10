@@ -22,7 +22,8 @@ import {
 import { Add, Download, UploadFile, Clear } from "@mui/icons-material";
 import { Link } from "react-router-dom";
 import {
-  maintenanceCallsStorageKey,
+  generateCalls,
+  isValidDateOnly,
   planStorageKey,
   routeStorageKey,
   samplePlans,
@@ -43,12 +44,6 @@ type CustomFieldDefinition = {
   label: string;
 };
 
-type PlannedCall = {
-  id: string;
-  plan: MaintenancePlan;
-  dueDate: Date;
-  route: RouteTemplate;
-};
 type ClientContract = { name: string; contractCode: string; wbs: string[] };
 
 const customFieldStorageKey = keys.maintenancePlanFields;
@@ -66,78 +61,6 @@ function readStored<T>(key: string, fallback: T): T {
 
 function makeId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-}
-
-function addCalendarInterval(date: Date, amount: number, unit: CalendarUnit): Date {
-  const result = new Date(date);
-  if (unit === "days") result.setDate(result.getDate() + amount);
-  if (unit === "months") {
-    const day = result.getDate();
-    result.setDate(1);
-    result.setMonth(result.getMonth() + amount);
-    const lastDay = new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate();
-    result.setDate(Math.min(day, lastDay));
-  }
-  if (unit === "years") {
-    const month = result.getMonth();
-    const day = result.getDate();
-    result.setFullYear(result.getFullYear() + amount);
-    if (result.getMonth() !== month) {
-      result.setDate(0);
-    } else {
-      const lastDay = new Date(result.getFullYear(), month + 1, 0).getDate();
-      result.setDate(Math.min(day, lastDay));
-    }
-  }
-  return result;
-}
-
-function generateCalls(plan: MaintenancePlan, route: RouteTemplate): PlannedCall[] {
-  if (
-    !isValidDateOnly(plan.startDate) ||
-    !Number.isInteger(plan.horizonMonths) ||
-    plan.horizonMonths < 1
-  ) return [];
-  const start = new Date(`${plan.startDate}T12:00:00`);
-  const end = addCalendarInterval(start, plan.horizonMonths, "months");
-  const calendarEnabled = plan.triggerType === "calendar" || plan.triggerType === "first";
-  const meterEnabled = plan.triggerType !== "calendar";
-  if (
-    (calendarEnabled && (!Number.isFinite(plan.calendarInterval) || plan.calendarInterval < 1)) ||
-    (meterEnabled && (!Number.isFinite(plan.meterInterval) || plan.meterInterval < 1 ||
-      !Number.isFinite(plan.averageUsagePerDay) || plan.averageUsagePerDay <= 0))
-  ) return [];
-  const meterDays = plan.averageUsagePerDay > 0
-    ? plan.meterInterval / plan.averageUsagePerDay
-    : Number.POSITIVE_INFINITY;
-  const lastExecutionMeter = plan.lastExecutionMeter ?? 0;
-  const currentMeterReading = plan.currentMeterReading ?? lastExecutionMeter;
-  const meterUsedSinceExecution = Math.max(0, currentMeterReading - lastExecutionMeter);
-  const meterDaysRemaining = plan.averageUsagePerDay > 0
-    ? Math.max(0, plan.meterInterval - meterUsedSinceExecution) / plan.averageUsagePerDay
-    : Number.POSITIVE_INFINITY;
-  let calendarDue = calendarEnabled
-    ? addCalendarInterval(start, plan.calendarInterval, plan.calendarUnit)
-    : null;
-  let meterDue = meterEnabled && Number.isFinite(meterDays) && Number.isFinite(meterDaysRemaining)
-    ? new Date(start.getTime() + meterDaysRemaining * 86400000)
-    : null;
-  const calls: PlannedCall[] = [];
-
-  while (calls.length < 120) {
-    const nextDue = calendarDue && meterDue
-      ? (calendarDue <= meterDue ? calendarDue : meterDue)
-      : calendarDue ?? meterDue;
-    if (!nextDue || nextDue > end) break;
-    calls.push({ id: `${plan.id}-${calls.length + 1}`, plan, dueDate: nextDue, route });
-    if (calendarEnabled) {
-      calendarDue = addCalendarInterval(nextDue, plan.calendarInterval, plan.calendarUnit);
-    }
-    if (meterEnabled && Number.isFinite(meterDays)) {
-      meterDue = new Date(nextDue.getTime() + meterDays * 86400000);
-    }
-  }
-  return calls;
 }
 
 function csvEscape(value: string | number): string {
@@ -183,12 +106,6 @@ function formatClp(value: number): string {
 
 function formatDate(value: Date): string {
   return new Intl.DateTimeFormat("es-CL").format(value);
-}
-
-function isValidDateOnly(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const date = new Date(`${value}T12:00:00`);
-  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
 const planHeaders = [
@@ -256,14 +173,6 @@ export default function MaintenancePlanning({ role = "Administrador" }: { role?:
     }).sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime()),
     [plans, routeById],
   );
-  useEffect(() => {
-    localStorage.setItem(maintenanceCallsStorageKey, JSON.stringify(plannedCalls.map((call) => ({
-      id: call.id,
-      plan: call.plan,
-      routeId: call.route.id,
-      dueDate: call.dueDate.toISOString(),
-    }))));
-  }, [plannedCalls]);
   const projectedHours = plannedCalls.reduce(
     (sum, call) => sum + call.route.operations.reduce((total, operation) => total + operation.durationHours, 0),
     0,

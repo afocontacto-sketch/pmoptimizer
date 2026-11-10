@@ -26,7 +26,7 @@ import {
 } from "@mui/material";
 import { Add, Inventory2, Download, Print } from "@mui/icons-material";
 import {
-  maintenanceCallsStorageKey,
+  readPlannedCalls,
   routeStorageKey,
 } from "./maintenanceData";
 import type { RouteTemplate, RouteOperation } from "./maintenanceData";
@@ -115,7 +115,7 @@ const demoStock: StockBin[] = [
 ];
 
 function readCalls(): PlannedCall[] {
-  return readStoredList<PlannedCall>(maintenanceCallsStorageKey);
+  return readPlannedCalls();
 }
 
 function readStock(): StockBin[] {
